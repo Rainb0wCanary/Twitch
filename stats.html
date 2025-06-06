@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>Статистика и логи</title>
+    <style>
+        body { max-width: 600px; margin: 20px auto; font-family: Arial, sans-serif; }
+        #log { font-size: 13px; height: 120px; overflow: auto; background: #f9f9f9; border: 1px solid #ccc; padding: 5px; }
+        table { width: 100%; font-size: 13px; border-collapse: collapse; margin-top: 10px; }
+        th, td { border: 1px solid #ccc; padding: 5px; text-align: left; }
+        th { background: #f2f2f2; }
+        #uploadConfigButton { margin-top: 10px; }
+    </style>
+</head>
+<body>
+    <h2>Статистика просмотра</h2>
+    <table id="statsTable">
+        <thead>
+            <tr>
+                <th>Канал</th>
+                <th>Время (ч:м:с)</th>
+                <th>В черный список</th>
+            </tr>
+        </thead>
+        <tbody></tbody>
+    </table>
+    <h2>Логи</h2>
+    <div id="log"></div>
+    <button id="uploadConfigButton">Загрузить конфиг</button>
+    <input type="file" id="configFileInput" accept=".json" style="display:none;">
+    <script src="stats.js"></script>
+</body>
+</html>

@@ -1,0 +1,21 @@
+{
+    "manifest_version": 3,
+    "name": "Find Game Link",
+    "version": "1.0",
+    "description": "Находит и подсвечивает ссылку с игрой на странице",
+    "permissions": ["scripting", "storage", "activeTab"],
+    "host_permissions": ["<all_urls>"],
+    "background": {
+      "service_worker": "background.js"
+    },
+    "action": {
+      "default_popup": "popup.html"     
+    },
+    "content_scripts": [
+      {
+        "matches": ["<all_urls>"],
+        "js": ["content.js"]
+      }
+    ]
+  }
+  

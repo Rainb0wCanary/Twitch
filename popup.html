@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>Управление просмотром</title>
+    <style>
+        body { width: 220px; padding: 10px; font-family: Arial, sans-serif; }
+        button { width: 100%; padding: 10px; margin-top: 10px; }
+        #currentTimer { margin-top: 10px; font-size: 16px; color: #333; text-align: center; }
+        #statusIndicator {
+            width: 16px; height: 16px; border-radius: 50%; display: inline-block; margin-right: 8px; vertical-align: middle;
+            border: 2px solid #ccc;
+        }
+        #statusText { font-size: 14px; vertical-align: middle; }
+        #startButton[disabled] { background: #bbb !important; color: #fff !important; cursor: not-allowed; }
+    </style>
+</head>
+<body>
+    <div style="text-align:center;margin-bottom:10px;">
+        <span id="statusIndicator"></span>
+        <span id="statusText">Статус неизвестен</span>
+    </div>
+    <button id="startButton" style="background: #4CAF50; color: white;">Старт просмотра</button>
+    <button id="stopButton" style="background: #f44336; color: white;">Стоп</button>
+    <div id="currentTimer"></div>
+    <a href="stats.html" target="_blank" style="display:block;text-align:center;margin-top:15px;">Статистика и логи</a>
+    <script src="popup.js"></script>
+</body>
+</html>
