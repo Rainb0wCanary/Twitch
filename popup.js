@@ -70,26 +70,6 @@ document.addEventListener("DOMContentLoaded", () => {
     setInterval(checkConfigAndStatus, 2000);
 });
 
-// Удалите или закомментируйте этот блок, если searchButton отсутствует в popup.html
-// document.getElementById("searchButton").addEventListener("click", () => {
-//     chrome.storage.local.get("userConfig", (data) => {
-//         if (data.userConfig && data.userConfig.searchUrlPart) {
-//             runSearch(data.userConfig.searchUrlPart);
-//         } else {
-//             fetch(chrome.runtime.getURL('config.json'))
-//                 .then(response => response.json())
-//                 .then(config => {
-//                     const inputText = config.searchUrlPart?.trim();
-//                     if (!inputText) {
-//                         alert("Часть ссылки для поиска не указана в config.json!");
-//                         return;
-//                     }
-//                     runSearch(inputText);
-//                 })
-//                 .catch(() => alert("Ошибка загрузки config.json!"));
-//         }
-//     });
-// });
 
 function updateCurrentTimer() {
     chrome.runtime.sendMessage({ action: "getCurrentStreamInfo" }, (resp) => {
