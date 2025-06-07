@@ -4,15 +4,21 @@
     <meta charset="UTF-8">
     <title>Управление просмотром</title>
     <style>
-        body { width: 220px; padding: 10px; font-family: Arial, sans-serif; }
-        button { width: 100%; padding: 10px; margin-top: 10px; }
-        #currentTimer { margin-top: 10px; font-size: 16px; color: #333; text-align: center; }
+        body { width: 220px; padding: 10px; font-family: Arial, sans-serif; background: #f7f7fa; }
+        button { width: 100%; padding: 10px; margin-top: 10px; border-radius: 6px; border: none; font-size: 15px; transition: background 0.2s; }
+        #currentTimer { margin-top: 10px; font-size: 16px; color: #333; text-align: center; background: #fff3cd; border-radius: 6px; padding: 8px 0; border: 1px solid #ffe082; }
         #statusIndicator {
             width: 16px; height: 16px; border-radius: 50%; display: inline-block; margin-right: 8px; vertical-align: middle;
             border: 2px solid #ccc;
         }
         #statusText { font-size: 14px; vertical-align: middle; }
+        #startButton { background: #4CAF50; color: white; }
         #startButton[disabled] { background: #bbb !important; color: #fff !important; cursor: not-allowed; }
+        #stopButton { background: #f44336; color: white; }
+        #stopButton:hover { background: #b71c1c; }
+        #startButton:hover:not([disabled]) { background: #388e3c; }
+        a { color: #2196F3; text-decoration: none; font-size: 14px; }
+        a:hover { text-decoration: underline; }
     </style>
 </head>
 <body>
@@ -20,8 +26,8 @@
         <span id="statusIndicator"></span>
         <span id="statusText">Статус неизвестен</span>
     </div>
-    <button id="startButton" style="background: #4CAF50; color: white;">Старт просмотра</button>
-    <button id="stopButton" style="background: #f44336; color: white;">Стоп</button>
+    <button id="startButton">Старт просмотра</button>
+    <button id="stopButton">Стоп</button>
     <div id="currentTimer"></div>
     <a href="stats.html" target="_blank" style="display:block;text-align:center;margin-top:15px;">Статистика и логи</a>
     <script src="popup.js"></script>

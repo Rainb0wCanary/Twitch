@@ -11,15 +11,20 @@ document.addEventListener("DOMContentLoaded", () => {
                 try {
                     const config = JSON.parse(e.target.result);
                     if (config.searchUrlPart) {
-                        // Сохраняем новый конфиг в локальное хранилище
-                        chrome.storage.local.set({ userConfig: config }, () => {
-                            alert("Конфиг успешно загружен!");
+                        // Удаляем прошлый конфиг перед загрузкой нового
+                        chrome.storage.local.remove("userConfig", () => {
+                            chrome.storage.local.set({ userConfig: config }, () => {
+                                alert("Конфиг успешно загружен!");
+                            });
                         });
                     } else {
                         alert("В конфиге отсутствует searchUrlPart!");
                     }
                 } catch {
-                    alert("Ошибка чтения файла конфига!");
+                    // Удаляем прошлый конфиг если новый некорректен
+                    chrome.storage.local.remove("userConfig", () => {
+                        alert("Ошибка чтения файла конфига! Прошлый конфиг удалён.");
+                    });
                 }
             };
             reader.readAsText(file);
@@ -65,92 +70,26 @@ document.addEventListener("DOMContentLoaded", () => {
     setInterval(checkConfigAndStatus, 2000);
 });
 
-// Модифицируем обработчик поиска для использования пользовательского конфига
-document.getElementById("searchButton").addEventListener("click", () => {
-    chrome.storage.local.get("userConfig", (data) => {
-        if (data.userConfig && data.userConfig.searchUrlPart) {
-            runSearch(data.userConfig.searchUrlPart);
-        } else {
-            fetch(chrome.runtime.getURL('config.json'))
-                .then(response => response.json())
-                .then(config => {
-                    const inputText = config.searchUrlPart?.trim();
-                    if (!inputText) {
-                        alert("Часть ссылки для поиска не указана в config.json!");
-                        return;
-                    }
-                    runSearch(inputText);
-                })
-                .catch(() => alert("Ошибка загрузки config.json!"));
-        }
-    });
-});
-
-function updateLogView(logArr) {
-    const logDiv = document.getElementById("log");
-    if (logDiv) {
-        logDiv.innerHTML = (logArr || []).join("<br>");
-        logDiv.scrollTop = logDiv.scrollHeight;
-    }
-}
-
-function pollLog() {
-    chrome.runtime.sendMessage({ action: "getLog" }, (resp) => {
-        if (resp && resp.log) updateLogView(resp.log);
-    });
-}
-
-function pollIsRunning(cb) {
-    chrome.runtime.sendMessage({ action: "getIsRunning" }, (resp) => {
-        if (cb) cb(resp && resp.isRunning);
-    });
-}
-
-document.getElementById("startButton").addEventListener("click", () => {
-    chrome.runtime.sendMessage({ action: "startWatching" });
-    setTimeout(pollLog, 500);
-});
-
-document.getElementById("stopButton").addEventListener("click", () => {
-    chrome.runtime.sendMessage({ action: "stopWatching" });
-    setTimeout(pollLog, 500);
-});
-
-// Обновление логов при открытии popup и по событию
-document.addEventListener("DOMContentLoaded", () => {
-    pollLog();
-    pollStats();
-    chrome.runtime.onMessage.addListener((request) => {
-        if (request.action === "logUpdate") updateLogView(request.log);
-    });
-});
-
-function runSearch(inputText) {
-    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-        if (tabs[0]) {
-            chrome.tabs.sendMessage(tabs[0].id, { action: "findLink", text: inputText }, (response) => {
-                if (chrome.runtime.lastError) {
-                    console.error("Ошибка при отправке сообщения: ", chrome.runtime.lastError);
-                }
-                if (response && response.found) {
-                    alert(`Ссылка найдена! \nURL: ${response.href}\nКоординаты: X=${response.position.x}, Y=${response.position.y}`);
-                } else {
-                    alert("Ссылка не найдена на странице.");
-                }
-            });
-        } else {
-            console.error("Активная вкладка не найдена.");
-        }
-    });
-}
-
-function secondsToHMS(sec) {
-    sec = Math.floor(sec);
-    let h = Math.floor(sec / 3600);
-    let m = Math.floor((sec % 3600) / 60);
-    let s = sec % 60;
-    return `${h}:${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}`;
-}
+// Удалите или закомментируйте этот блок, если searchButton отсутствует в popup.html
+// document.getElementById("searchButton").addEventListener("click", () => {
+//     chrome.storage.local.get("userConfig", (data) => {
+//         if (data.userConfig && data.userConfig.searchUrlPart) {
+//             runSearch(data.userConfig.searchUrlPart);
+//         } else {
+//             fetch(chrome.runtime.getURL('config.json'))
+//                 .then(response => response.json())
+//                 .then(config => {
+//                     const inputText = config.searchUrlPart?.trim();
+//                     if (!inputText) {
+//                         alert("Часть ссылки для поиска не указана в config.json!");
+//                         return;
+//                     }
+//                     runSearch(inputText);
+//                 })
+//                 .catch(() => alert("Ошибка загрузки config.json!"));
+//         }
+//     });
+// });
 
 function updateCurrentTimer() {
     chrome.runtime.sendMessage({ action: "getCurrentStreamInfo" }, (resp) => {
@@ -194,5 +133,31 @@ function checkConfigAndStatus() {
         chrome.runtime.sendMessage({ action: "getIsRunning" }, (resp) => {
             setStatusIndicator(resp && resp.isRunning, hasConfig);
         });
+    });
+}
+
+function secondsToHMS(sec) {
+    sec = Math.floor(sec);
+    let h = Math.floor(sec / 3600);
+    let m = Math.floor((sec % 3600) / 60);
+    let s = sec % 60;
+    return `${h}:${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}`;
+}
+
+// Дублируем функцию parseTimeToSeconds для popup.js, если она используется
+function parseTimeToSeconds(val) {
+    if (typeof val === "number") return val;
+    if (typeof val === "string") {
+        let parts = val.split(/[.,]/).map(Number);
+        let h = parts[0] || 0, m = parts[1] || 0, s = parts[2] || 0;
+        return h * 3600 + m * 60 + s;
+    }
+    return 0;
+}
+
+// Дублируем функцию resetWatchTime для popup.js, если она используется в popup.html
+function resetWatchTime(url) {
+    chrome.runtime.sendMessage({ action: "resetWatchTime", url }, () => {
+        // После сброса можно обновить UI, если нужно
     });
 }

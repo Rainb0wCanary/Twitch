@@ -4,12 +4,20 @@
     <meta charset="UTF-8">
     <title>Статистика и логи</title>
     <style>
-        body { max-width: 600px; margin: 20px auto; font-family: Arial, sans-serif; }
-        #log { font-size: 13px; height: 120px; overflow: auto; background: #f9f9f9; border: 1px solid #ccc; padding: 5px; }
-        table { width: 100%; font-size: 13px; border-collapse: collapse; margin-top: 10px; }
-        th, td { border: 1px solid #ccc; padding: 5px; text-align: left; }
-        th { background: #f2f2f2; }
-        #uploadConfigButton { margin-top: 10px; }
+        body { max-width: 600px; margin: 20px auto; font-family: Arial, sans-serif; background: #f7f7fa; }
+        #log { font-size: 13px; height: 120px; overflow: auto; background: #f9f9f9; border: 1px solid #ccc; padding: 5px; border-radius: 6px; }
+        table { width: 100%; font-size: 13px; border-collapse: collapse; margin-top: 10px; background: #fff; border-radius: 8px; overflow: hidden; }
+        th, td { border: 1px solid #e0e0e0; padding: 7px 5px; text-align: left; }
+        th { background: #e3e6f0; }
+        #uploadConfigButton, #clearLogsButton { margin-top: 10px; background: #4CAF50; color: #fff; border: none; border-radius: 5px; padding: 8px 16px; cursor: pointer; transition: background 0.2s; }
+        #uploadConfigButton:hover, #clearLogsButton:hover { background: #388e3c; }
+        .deactivate-btn { background: #f44336; color: #fff; border: none; border-radius: 4px; padding: 5px 10px; cursor: pointer; transition: background 0.2s; }
+        .deactivate-btn:hover { background: #b71c1c; }
+        .activate-btn { background: #2196F3; color: #fff; border: none; border-radius: 4px; padding: 5px 10px; cursor: pointer; transition: background 0.2s; }
+        .activate-btn:hover { background: #1565c0; }
+        .reset-watch-btn { background: #ff9800; color: #fff; border: none; border-radius: 4px; padding: 5px 10px; cursor: pointer; transition: background 0.2s; }
+        .reset-watch-btn:hover { background: #e65100; }
+        h2 { color: #333; margin-top: 20px; }
     </style>
 </head>
 <body>
@@ -19,15 +27,22 @@
             <tr>
                 <th>Канал</th>
                 <th>Время (ч:м:с)</th>
-                <th>В черный список</th>
+                <th>Статус</th>
+                <th>Действие</th>
+                <th>До разблокировки</th>
+                <th>Сбросить время</th>
             </tr>
         </thead>
         <tbody></tbody>
     </table>
     <h2>Логи</h2>
     <div id="log"></div>
+    <button id="clearLogsButton" style="margin-top:10px;">Очистить логи</button>
     <button id="uploadConfigButton">Загрузить конфиг</button>
     <input type="file" id="configFileInput" accept=".json" style="display:none;">
+    <label style="display:block;margin:10px 0 0 0;font-size:14px;">
+        <input type="checkbox" id="toggleLogsCheckbox" checked style="vertical-align:middle;"> Вести логи
+    </label>
     <script src="stats.js"></script>
 </body>
 </html>

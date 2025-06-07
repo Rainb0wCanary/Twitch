@@ -1,11 +1,15 @@
 {
   "searchUrlPart": "rust",
   "channels": [
-    { "url": "https://www.twitch.tv/posty", "watchTime": "0.0.20" },
-    { "url": "https://www.twitch.tv/shroud", "watchTime": "0.0.40" },
-    { "url": "https://www.twitch.tv/winnie", "watchTime": "0.0.25" },
-    { "url": "https://www.twitch.tv/danone_2001", "watchTime": "0.0.15" },
-    { "url": "https://www.twitch.tv/chipa_rust", "watchTime": "0.0.30" }
+    { "url": "https://www.twitch.tv/templetaps", "watchTime": "0.10.30" },
+    { "url": "https://www.twitch.tv/posty", "watchTime": "0.10.30" },
+    { "url": "https://www.twitch.tv/shroud", "watchTime": "0.10.30" },
+    { "url": "https://www.twitch.tv/winnie", "watchTime": "0.10.30" },
+    { "url": "https://www.twitch.tv/danone_2001", "watchTime": "0.10.30" },
+    { "url": "https://www.twitch.tv/chipa_rust", "watchTime": "0.10.30" },
+    { "url": "https://www.twitch.tv/shamanfth", "watchTime": "0.10.30" }
   ],
-  "waitBeforeCheck": 10
+  "waitBeforeCheck": 10,
+  "maxAttempts": 5,
+  "tempBlacklistSeconds": "0.5.30"
 }
