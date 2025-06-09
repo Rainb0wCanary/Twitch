@@ -60,3 +60,4 @@ C
 ## Обратная связь
 Telegram: @RainbowCanary
 Discord: rainbowcanary
+Mail: rainbowcanaryyt@gmail.com
