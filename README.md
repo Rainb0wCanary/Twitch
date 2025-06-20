@@ -57,6 +57,46 @@ C
 }
 ```
 
+## Быстрое формирование конфига через DevTools
+
+Если у вас есть страница с дропами или списком стримеров, вы можете быстро собрать список каналов и их времени просмотра с помощью следующего скрипта для консоли браузера:
+
+```js
+function parseWatchTime(text) {
+  let hours = 0, minutes = 0;
+
+  if (/hour/i.test(text)) {
+    const match = text.match(/(\d+)\s*hour/i);
+    if (match) hours = parseInt(match[1]);
+  }
+
+  if (/minute/i.test(text)) {
+    const match = text.match(/(\d+)\s*minute/i);
+    if (match) minutes = parseInt(match[1]);
+  }
+
+  // Преобразуем в формат HH.MM.SS (всегда SS = 30, как ты указал)
+  return `${hours}.${String(minutes).padStart(2, '0')}.30`;
+}
+
+const channels = [...document.querySelectorAll('.drop-box')].map(box => {
+  const url = box.querySelector('.streamer-info')?.href;
+  const rawTime = box.querySelector('.drop-time span')?.textContent.trim() || "";
+  const watchTime = parseWatchTime(rawTime);
+  // Фильтруем только валидные ссылки
+  return url ? { url, watchTime } : null;
+}).filter(Boolean);
+
+const config = { channels };
+
+console.log(JSON.stringify(config, null, 2));
+```
+
+1. Откройте страницу с нужными каналами в браузере.
+2. Откройте DevTools (F12), вкладка Console.
+3. Вставьте и выполните скрипт.
+4. В консоли появится готовый JSON для вставки в ваш config.json.
+
 ## Обратная связь
 Telegram: @RainbowCanary
 Discord: rainbowcanary

@@ -1,15 +1,51 @@
 {
   "searchUrlPart": "rust",
+
   "channels": [
-    { "url": "https://www.twitch.tv/templetaps", "watchTime": "0.10.30" },
-    { "url": "https://www.twitch.tv/posty", "watchTime": "0.10.30" },
-    { "url": "https://www.twitch.tv/shroud", "watchTime": "0.10.30" },
-    { "url": "https://www.twitch.tv/winnie", "watchTime": "0.10.30" },
-    { "url": "https://www.twitch.tv/danone_2001", "watchTime": "0.10.30" },
-    { "url": "https://www.twitch.tv/chipa_rust", "watchTime": "0.10.30" },
-    { "url": "https://www.twitch.tv/shamanfth", "watchTime": "0.10.30" }
+    {
+      "url": "https://www.twitch.tv/Carola",
+      "watchTime": "2.00.30"
+    },
+    {
+      "url": "https://www.twitch.tv/Ricoy",
+      "watchTime": "2.00.30"
+    },
+    {
+      "url": "https://www.twitch.tv/aroyitt",
+      "watchTime": "2.00.30"
+    },
+    {
+      "url": "https://www.twitch.tv/Agustabell212",
+      "watchTime": "2.00.30"
+    },
+    {
+      "url": "https://www.twitch.tv/Silithur",
+      "watchTime": "2.00.30"
+    },
+    {
+      "url": "https://www.twitch.tv/StarWraith",
+      "watchTime": "2.00.30"
+    },
+    {
+      "url": "https://www.twitch.tv/Staryuuki",
+      "watchTime": "2.00.30"
+    },
+    {
+      "url": "https://www.twitch.tv/CrystalMolly",
+      "watchTime": "2.00.30"
+    },
+    {
+      "url": "https://www.twitch.tv/Mixwell",
+      "watchTime": "2.00.30"
+    },
+    {
+      "url": "https://www.twitch.tv/elxokas",
+      "watchTime": "2.00.30"
+    }
   ],
+
   "waitBeforeCheck": 10,
   "maxAttempts": 5,
   "tempBlacklistSeconds": "0.5.30"
 }
+
