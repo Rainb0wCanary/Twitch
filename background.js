@@ -282,9 +282,13 @@ function checkChannel(tabId, url, watchTime, attempt = 1, maxAttempts = 3) {
 }
 
 // Заменяем вызов chrome.tabs.sendMessage на safeSendMessage в doFindLink
-function doFindLink(tabId, url, watchTime, attempt, maxAttempts) {
+function doFindLink(tabId, url, watchTime, attempt, maxAttempts, onResult) {
     log(`Проверка наличия ссылки "${searchUrlPart}"... (попытка ${attempt})`);
     safeSendMessage(tabId, { action: "findLink", text: searchUrlPart }, (response) => {
+        if (typeof onResult === "function") {
+            onResult(response);
+            return;
+        }
         if (!response) {
             log("Ошибка при поиске ссылки (контент-скрипт не найден).");
             if (attempt >= maxAttempts && userPrevTabId && userPrevTabId !== tabId) {
@@ -485,7 +489,8 @@ function startWatchTimer(tabId, url, watchTime) {
             chrome.storage.local.get("userConfig", (data) => {
                 let config = data.userConfig;
                 let searchUrlPart = config && config.searchUrlPart ? config.searchUrlPart : "";
-                safeSendMessage(tabId, { action: "findLink", text: searchUrlPart }, (response) => {
+                // Используем doFindLink для проверки
+                doFindLink(tabId, url, watchTime, 1, 1, (response) => {
                     if (!response || !response.found) {
                         log(`Ссылка '${searchUrlPart}' пропала во время просмотра ${url}. Досрочно завершаем просмотр.`);
                         clearInterval(timerInterval);

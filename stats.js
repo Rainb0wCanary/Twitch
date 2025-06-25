@@ -31,6 +31,13 @@ function updateStatsTable(stats) {
         channels.forEach(ch => {
             const url = typeof ch === "string" ? ch : ch.url;
             const sec = stats && stats[url] ? stats[url] : 0;
+            // Получаем целевое время просмотра
+            let targetSec = 0;
+            if (typeof ch === "string") {
+                targetSec = config && config.watchTime ? parseTimeToSeconds(config.watchTime) : 0;
+            } else {
+                targetSec = ch.watchTime ? parseTimeToSeconds(ch.watchTime) : (config && config.watchTime ? parseTimeToSeconds(config.watchTime) : 0);
+            }
             let statusText = "";
             let btnText = "";
             let btnClass = "";
@@ -58,6 +65,7 @@ function updateStatsTable(stats) {
             tr.innerHTML = `
                 <td><a href="${url}" target="_blank" rel="noopener noreferrer">${url}</a></td>
                 <td>${secondsToHMS(sec)}</td>
+                <td>${secondsToHMS(targetSec)}</td>
                 <td>${statusText}</td>
                 <td>
                     <button type="button" class="${btnClass}" data-url="${url}">${btnText}</button>
@@ -239,6 +247,18 @@ document.addEventListener("DOMContentLoaded", () => {
             chrome.runtime.sendMessage({ action: "clearLogs" }, () => {
                 pollLog();
             });
+        });
+    }
+
+    const deleteConfigButton = document.getElementById("deleteConfigButton");
+    if (deleteConfigButton) {
+        deleteConfigButton.addEventListener("click", function() {
+            if (confirm("Вы уверены, что хотите полностью удалить конфиг из хранилища браузера? Это действие необратимо.")) {
+                chrome.storage.local.remove(["userConfig"], function() {
+                    alert("Конфиг удалён из хранилища.");
+                    location.reload();
+                });
+            }
         });
     }
 });
