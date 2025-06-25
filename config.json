@@ -1,5 +1,6 @@
 {
   "searchUrlPart": "rust",
+  "checkIntervalMinutes": 5,
 
   "channels": [
     {

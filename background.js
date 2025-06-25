@@ -316,7 +316,8 @@ function doFindLink(tabId, url, watchTime, attempt, maxAttempts) {
     });
 }
 
-function addToBlacklist(url) {
+// Модифицированная функция addToBlacklist с поддержкой customDurationSeconds
+function addToBlacklist(url, customDurationSeconds) {
     chrome.storage.local.get("userConfig", (data) => {
         let config = data.userConfig;
         if (!config) return;
@@ -338,6 +339,10 @@ function addToBlacklist(url) {
         } else if (typeof config.tempBlacklistSeconds === "string") {
             tempBlacklistSeconds = parseTimeToSeconds(config.tempBlacklistSeconds);
         }
+        // Если передан customDurationSeconds — используем его
+        if (typeof customDurationSeconds === "number" && customDurationSeconds > 0) {
+            tempBlacklistSeconds = customDurationSeconds;
+        }
         // Если уже просмотрено достаточно — делаем permanent
         if (totalWatched[url] && watchTime > 0 && totalWatched[url] >= watchTime) {
             config.blacklist[url] = "permanent";
@@ -345,11 +350,11 @@ function addToBlacklist(url) {
                 log(`Канал ${url} навсегда добавлен в черный список (достигнуто время просмотра).`);
             });
         } else {
-            // Ставим время разблокировки по общей константе
+            // Ставим время разблокировки по customDurationSeconds или общей константе
             const until = Date.now() + tempBlacklistSeconds * 1000;
             config.blacklist[url] = until;
             chrome.storage.local.set({ userConfig: config }, () => {
-                log(`Канал ${url} добавлен в черный список до ${new Date(until).toLocaleTimeString()}.`);
+                log(`Канал ${url} добавлен в черный список до ${new Date(until).toLocaleTimeString()} (блокировка на ${Math.round(tempBlacklistSeconds/60)} мин).`);
             });
         }
     });
@@ -392,68 +397,109 @@ function startWatchTimer(tabId, url, watchTime) {
     let secondsLeft = watchTime;
     currentStreamInfo = { url, secondsLeft };
     let timerStopped = false;
-    timerInterval = setInterval(() => {
-        if (!isRunning || timerStopped) {
-            clearInterval(timerInterval);
-            currentStreamInfo = { url: null, secondsLeft: 0 };
-            return;
+    let linkCheckInterval = null;
+    let checkIntervalMs = 2 * 60 * 1000; // по умолчанию 2 минуты
+
+    // Получаем интервал из конфига
+    chrome.storage.local.get("userConfig", (data) => {
+        let config = data.userConfig;
+        if (config && typeof config.checkIntervalMinutes === "number" && config.checkIntervalMinutes > 0) {
+            checkIntervalMs = config.checkIntervalMinutes * 60 * 1000;
         }
 
-        chrome.storage.local.get("userConfig", (data) => {
-            let config = data.userConfig;
-            // Если канал в permanent ЧС — сразу останавливаем таймер и переходим к следующему
-            if (config && typeof config.blacklist === "object" && config.blacklist[url] === "permanent") {
+        // Запускаем основной таймер просмотра
+        timerInterval = setInterval(() => {
+            if (!isRunning || timerStopped) {
                 clearInterval(timerInterval);
-                timerStopped = true;
+                if (linkCheckInterval) clearInterval(linkCheckInterval);
                 currentStreamInfo = { url: null, secondsLeft: 0 };
-                log(`Канал ${url} находится в черном списке навсегда. Таймер остановлен.`);
-                nextChannel();
                 return;
             }
 
-            // Проверяем лимит времени просмотра
-            let channel = (config.channels || []).find(
-                ch => (typeof ch === "string" ? ch : ch.url) === url
-            );
-            let wTime = 0;
-            if (channel) {
-                wTime = typeof channel === "string"
-                    ? parseTimeToSeconds(config.watchTime)
-                    : parseTimeToSeconds(channel.watchTime || config.watchTime);
-            }
-
-            // Если лимит достигнут — ставим permanent, останавливаем таймер и переходим к следующему
-            if (wTime > 0 && totalWatched[url] >= wTime) {
-                if (config.blacklist[url] !== "permanent") {
-                    config.blacklist[url] = "permanent";
-                    chrome.storage.local.set({ userConfig: config }, () => {
-                        log(`Канал ${url} навсегда добавлен в черный список (достигнуто время просмотра).`);
-                    });
+            chrome.storage.local.get("userConfig", (data) => {
+                let config = data.userConfig;
+                // Если канал в permanent ЧС — сразу останавливаем таймер и переходим к следующему
+                if (config && typeof config.blacklist === "object" && config.blacklist[url] === "permanent") {
+                    clearInterval(timerInterval);
+                    if (linkCheckInterval) clearInterval(linkCheckInterval);
+                    timerStopped = true;
+                    currentStreamInfo = { url: null, secondsLeft: 0 };
+                    log(`Канал ${url} находится в черном списке навсегда. Таймер остановлен.`);
+                    nextChannel();
+                    return;
                 }
-                clearInterval(timerInterval);
-                timerStopped = true;
-                currentStreamInfo = { url: null, secondsLeft: 0 };
-                log(`Время на ${url} истекло (лимит достигнут).`);
-                nextChannel();
+
+                // Проверяем лимит времени просмотра
+                let channel = (config.channels || []).find(
+                    ch => (typeof ch === "string" ? ch : ch.url) === url
+                );
+                let wTime = 0;
+                if (channel) {
+                    wTime = typeof channel === "string"
+                        ? parseTimeToSeconds(config.watchTime)
+                        : parseTimeToSeconds(channel.watchTime || config.watchTime);
+                }
+
+                // Если лимит достигнут — ставим permanent, останавливаем таймер и переходим к следующему
+                if (wTime > 0 && totalWatched[url] >= wTime) {
+                    if (config.blacklist[url] !== "permanent") {
+                        config.blacklist[url] = "permanent";
+                        chrome.storage.local.set({ userConfig: config }, () => {
+                            log(`Канал ${url} навсегда добавлен в черный список (достигнуто время просмотра).`);
+                        });
+                    }
+                    clearInterval(timerInterval);
+                    if (linkCheckInterval) clearInterval(linkCheckInterval);
+                    timerStopped = true;
+                    currentStreamInfo = { url: null, secondsLeft: 0 };
+                    log(`Время на ${url} истекло (лимит достигнут).`);
+                    nextChannel();
+                    return;
+                }
+
+                // Если лимит не достигнут — продолжаем отсчет
+                secondsLeft--;
+                currentStreamInfo = { url, secondsLeft };
+                if (!totalWatched[url]) totalWatched[url] = 0;
+                totalWatched[url]++;
+                chrome.storage.local.set({ totalWatched });
+
+                if (secondsLeft <= 0) {
+                    clearInterval(timerInterval);
+                    if (linkCheckInterval) clearInterval(linkCheckInterval);
+                    timerStopped = true;
+                    currentStreamInfo = { url: null, secondsLeft: 0 };
+                    log(`Время на ${url} истекло.`);
+                    nextChannel();
+                }
+            });
+        }, 1000);
+
+        // Запускаем периодическую проверку наличия ссылки
+        linkCheckInterval = setInterval(() => {
+            if (!isRunning || timerStopped) {
+                if (linkCheckInterval) clearInterval(linkCheckInterval);
                 return;
             }
-
-            // Если лимит не достигнут — продолжаем отсчет
-            secondsLeft--;
-            currentStreamInfo = { url, secondsLeft };
-            if (!totalWatched[url]) totalWatched[url] = 0;
-            totalWatched[url]++;
-            chrome.storage.local.set({ totalWatched });
-
-            if (secondsLeft <= 0) {
-                clearInterval(timerInterval);
-                timerStopped = true;
-                currentStreamInfo = { url: null, secondsLeft: 0 };
-                log(`Время на ${url} истекло.`);
-                nextChannel();
-            }
-        });
-    }, 1000);
+            // Получаем searchUrlPart из конфига
+            chrome.storage.local.get("userConfig", (data) => {
+                let config = data.userConfig;
+                let searchUrlPart = config && config.searchUrlPart ? config.searchUrlPart : "";
+                safeSendMessage(tabId, { action: "findLink", text: searchUrlPart }, (response) => {
+                    if (!response || !response.found) {
+                        log(`Ссылка '${searchUrlPart}' пропала во время просмотра ${url}. Досрочно завершаем просмотр.`);
+                        clearInterval(timerInterval);
+                        if (linkCheckInterval) clearInterval(linkCheckInterval);
+                        timerStopped = true;
+                        currentStreamInfo = { url: null, secondsLeft: 0 };
+                        // Добавляем канал в ЧС на время просмотра
+                        addToBlacklist(url, watchTime);
+                        nextChannel();
+                    }
+                });
+            });
+        }, checkIntervalMs);
+    });
 }
 
 function nextChannel() {
