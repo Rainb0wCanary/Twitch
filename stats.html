@@ -3,26 +3,23 @@
 <head>
     <meta charset="UTF-8">
     <title>Статистика и логи</title>
-    <style>
-        body { max-width: 600px; margin: 20px auto; font-family: Arial, sans-serif; background: #f7f7fa; }
-        #log { font-size: 13px; height: 120px; overflow: auto; background: #f9f9f9; border: 1px solid #ccc; padding: 5px; border-radius: 6px; }
-        table { width: 100%; font-size: 13px; border-collapse: collapse; margin-top: 10px; background: #fff; border-radius: 8px; overflow: hidden; }
-        th, td { border: 1px solid #e0e0e0; padding: 7px 5px; text-align: left; }
-        th { background: #e3e6f0; }
-        #uploadConfigButton, #clearLogsButton, #deleteConfigButton { margin-top: 10px; background: #4CAF50; color: #fff; border: none; border-radius: 5px; padding: 8px 16px; cursor: pointer; transition: background 0.2s; }
-        #uploadConfigButton:hover, #clearLogsButton:hover, #deleteConfigButton:hover { background: #388e3c; }
-        .deactivate-btn { background: #f44336; color: #fff; border: none; border-radius: 4px; padding: 5px 10px; cursor: pointer; transition: background 0.2s; }
-        .deactivate-btn:hover { background: #b71c1c; }
-        .activate-btn { background: #2196F3; color: #fff; border: none; border-radius: 4px; padding: 5px 10px; cursor: pointer; transition: background 0.2s; }
-        .activate-btn:hover { background: #1565c0; }
-        .reset-watch-btn { background: #ff9800; color: #fff; border: none; border-radius: 4px; padding: 5px 10px; cursor: pointer; transition: background 0.2s; }
-        .reset-watch-btn:hover { background: #e65100; }
-        h2 { color: #333; margin-top: 20px; }
-    </style>
+    <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-    <h2>Статистика просмотра</h2>
-    <table id="statsTable">
+    <div class="container">
+      <h2>Статистика просмотра</h2>
+      <div id="configForm" class="card" style="margin-bottom:12px;">
+        <div class="flex gap-8" style="flex-wrap:wrap;align-items:center;">
+            <label style="min-width:180px;">searchUrlPart: <input id="searchUrlPartInput" type="text" style="width:220px;margin-left:6px;"></label>
+            <label>checkIntervalMinutes: <input id="checkIntervalMinutesInput" type="number" min="1" style="width:80px;margin-left:6px;"></label>
+            <label>waitBeforeCheck: <input id="waitBeforeCheckInput" type="number" min="0" style="width:80px;margin-left:6px;"></label>
+            <label>maxAttempts: <input id="maxAttemptsInput" type="number" min="1" style="width:80px;margin-left:6px;"></label>
+            <label>tempBlacklistSeconds: <input id="tempBlacklistSecondsInput" type="text" placeholder="0.00.30" style="width:120px;margin-left:6px;"></label>
+            <button id="saveConfigFormButton" class="btn btn-accent" style="margin-left:6px;">Сохранить конфиг</button>
+        </div>
+      </div>
+
+    <table id="statsTable" class="card">
         <thead>
             <tr>
                 <th>Канал</th>
@@ -35,16 +32,30 @@
             </tr>
         </thead>
         <tbody></tbody>
+        <tfoot>
+            <tr>
+                <td><input id="newChannelUrlInput" type="text" placeholder="https://www.twitch.tv/..." style="width:100%;"></td>
+                <td>--</td>
+                <td><input id="newChannelWatchTimeInput" type="text" placeholder="H.MM.SS" style="width:100px;"></td>
+                <td></td>
+                <td><button id="addChannelRowButton" class="btn btn-accent">Добавить</button></td>
+                <td></td>
+                <td></td>
+            </tr>
+        </tfoot>
     </table>
-    <h2>Логи</h2>
-    <div id="log"></div>
-    <button id="clearLogsButton" style="margin-top:10px;">Очистить логи</button>
-    <button id="deleteConfigButton" style="margin-top:10px;background:#d32f2f;">Удалить конфиг из хранилища</button>
-    <button id="uploadConfigButton">Загрузить конфиг</button>
-    <input type="file" id="configFileInput" accept=".json" style="display:none;">
-    <label style="display:block;margin:10px 0 0 0;font-size:14px;">
-        <input type="checkbox" id="toggleLogsCheckbox" checked style="vertical-align:middle;"> Вести логи
-    </label>
+
+    <h2 style="margin-top:18px">Логи</h2>
+    <div id="log" class="card" style="margin-bottom:8px"></div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px;align-items:center;">
+        <button id="clearLogsButton" class="btn btn-primary">Очистить логи</button>
+        <button id="deleteConfigButton" class="btn btn-danger">Удалить конфиг из хранилища</button>
+        <button id="uploadConfigButton" class="btn btn-accent">Загрузить конфиг</button>
+        <input type="file" id="configFileInput" accept=".json" style="display:none;">
+        <label style="display:block;margin:0 0 0 8px;font-size:14px;">
+            <input type="checkbox" id="toggleLogsCheckbox" checked style="vertical-align:middle;"> Вести логи
+        </label>
+    </div>
     <script src="stats.js"></script>
 </body>
 </html>

@@ -1,6 +1,9 @@
 let isRunning = false;
 let currentChannelIndex = 0;
 let timerInterval = null;
+// Устаревшее имя оставлено для совместимости; дополнительно используются watchTimerInterval и watchLinkCheckInterval
+let watchTimerInterval = null;
+let watchLinkCheckInterval = null;
 let channels = [];
 let searchUrlPart = "";
 let defaultWatchTime = 30;
@@ -8,10 +11,14 @@ let defaultWaitBeforeCheck = 5;
 let logBuffer = [];
 let activeTabId = null;
 let streamTabId = null; // id вкладки, где крутятся стримы
+let streamWindowId = null; // id выделенного окна, где держим вкладку со стримом
 let totalWatched = {}; // { url: seconds }
 let currentStreamInfo = { url: null, secondsLeft: 0 };
 let userPrevTabId = null; // id вкладки пользователя до переключения на стрим
 let loggingEnabled = false;
+let currentRunId = 0; // маркер запуска, используется для инвалидирования устаревших таймеров/обратных вызовов
+let scheduledCheckTimeout = null; // id таймаута для запланированной проверки checkChannel (в watchNextChannel/manual)
+let pendingDoFindTimeout = null; // id таймаута для отложенного вызова doFindLink в checkChannel
 
 function setLoggingEnabled(enabled) {
     loggingEnabled = enabled;
@@ -26,8 +33,33 @@ function log(msg) {
     logBuffer.push(msg);
     if (logBuffer.length > 100) logBuffer.shift();
     chrome.storage.local.set({ logBuffer });
-    // Для popup: если открыт, отправим обновление
-    chrome.runtime.sendMessage({ action: "logUpdate", log: logBuffer });
+    // Для popup: если открыт, отправим обновление (безопасно)
+    try {
+        chrome.runtime.sendMessage({ action: "logUpdate", log: logBuffer }, () => {
+                // игнорируем ошибки, когда нет получателя
+            if (chrome.runtime.lastError) {
+                // нет получателя (popup закрыт) — это нормально
+            }
+        });
+    } catch (e) {
+        // игнорируем
+    }
+}
+
+// Вспомогательная функция для безопасной отправки runtime-сообщений из background
+function safeRuntimeSendMessage(message, callback) {
+    try {
+        chrome.runtime.sendMessage(message, (resp) => {
+            if (chrome.runtime.lastError) {
+                // нет получателя или другая ошибка
+                if (typeof callback === 'function') callback(undefined, chrome.runtime.lastError);
+                return;
+            }
+            if (typeof callback === 'function') callback(resp, null);
+        });
+    } catch (err) {
+        if (typeof callback === 'function') callback(undefined, err);
+    }
 }
 
 function setActiveTabId(cb) {
@@ -52,29 +84,91 @@ function parseTimeToSeconds(val) {
     return 0;
 }
 
-function setStreamTab(url, cb) {
-    if (streamTabId !== null) {
-        // Проверяем, существует ли вкладка
-        chrome.tabs.get(streamTabId, tab => {
-            if (chrome.runtime.lastError || !tab) {
-                // Вкладка была закрыта, создаём новую
-                chrome.tabs.create({ url, active: false }, tab => {
-                    streamTabId = tab.id;
-                    cb && cb();
-                });
-            } else {
-                // Вкладка есть, просто обновляем url
-                chrome.tabs.update(streamTabId, { url }, () => cb && cb());
+function ensureStreamWindow(cb) {
+    // Проверяем существующее окно; не создаём about:blank заранее — создаём окно с нужной вкладкой в setStreamTab
+    if (streamWindowId !== null) {
+        chrome.windows.get(streamWindowId, { populate: false }, (win) => {
+            if (chrome.runtime.lastError || !win) {
+                // окно закрыто
+                streamWindowId = null;
             }
-        });
-    } else {
-        // Вкладка ещё не создана
-        chrome.tabs.create({ url, active: false }, tab => {
-            streamTabId = tab.id;
             cb && cb();
         });
+    } else {
+        // еще не создано, просто вызываем callback и позволяем setStreamTab создать окно с нужной вкладкой
+        cb && cb();
     }
 }
+
+function setStreamTab(url, cb) {
+    // Убедиться, что у нас есть выделенное окно для стримов и создать/обновить в нём одну вкладку
+    ensureStreamWindow(() => {
+    // Если окна ещё нет — создаём новое окно сразу с URL стрима (чтобы не оставлять about:blank)
+        if (!streamWindowId) {
+            chrome.windows.create({ url, focused: false }, (w) => {
+                streamWindowId = w.id;
+                // пытаемся получить id вкладки из созданного окна (первая вкладка)
+                try {
+                    if (w && w.tabs && w.tabs[0]) streamTabId = w.tabs[0].id;
+                } catch (e) {}
+                currentStreamInfo = { url, secondsLeft: 0 };
+                cb && cb();
+            });
+            return;
+        }
+
+        if (streamTabId !== null) {
+            chrome.tabs.get(streamTabId, tab => {
+                if (chrome.runtime.lastError || !tab) {
+                    // вкладка исчезла — создаём новую во вкладке streamWindow и делаем её активной в этом окне
+                    chrome.tabs.create({ windowId: streamWindowId, url, active: true }, tab => {
+                        streamTabId = tab.id;
+                        currentStreamInfo = { url, secondsLeft: 0 };
+                        cb && cb();
+                    });
+                } else {
+                    // если вкладка есть, но в другом окне, перемещаем её, затем обновляем и делаем активной
+                    if (tab.windowId !== streamWindowId) {
+                        chrome.tabs.move(streamTabId, { windowId: streamWindowId, index: -1 }, () => {
+                            chrome.tabs.update(streamTabId, { url, active: true }, () => cb && cb());
+                        });
+                    } else {
+                        chrome.tabs.update(streamTabId, { url, active: true }, (updatedTab) => {
+                            currentStreamInfo = { url, secondsLeft: 0 };
+                            cb && cb();
+                        });
+                    }
+                }
+            });
+        } else {
+            // В streamWindow ещё нет отслеживаемой вкладки — создаём её и делаем активной
+            chrome.tabs.create({ windowId: streamWindowId, url, active: true }, tab => {
+                streamTabId = tab.id;
+                currentStreamInfo = { url, secondsLeft: 0 };
+                cb && cb();
+            });
+        }
+    });
+}
+
+// Поддерживаем currentStreamInfo в актуальном состоянии при навигации или загрузке вкладки со стримом
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+    if (tabId === streamTabId) {
+        try {
+                if (changeInfo.url) {
+                currentStreamInfo = { url: changeInfo.url, secondsLeft: currentStreamInfo.secondsLeft || 0 };
+                log(`DEBUG: обновлён URL вкладки со стримом -> ${changeInfo.url}`);
+            }
+            if (changeInfo.status === 'complete') {
+                // Обновляем информацию, чтобы popup отображал актуальные данные до любых проверок
+                currentStreamInfo = { url: tab.url || currentStreamInfo.url, secondsLeft: currentStreamInfo.secondsLeft || 0 };
+                log(`DEBUG: загрузка вкладки со стримом завершена -> ${currentStreamInfo.url}`);
+            }
+        } catch (e) {
+            // игнорируем
+        }
+    }
+});
 
 function switchToTab(tabId, cb) {
     chrome.tabs.update(tabId, { active: true }, cb);
@@ -160,6 +254,15 @@ function closeStreamTabIfExists(cb) {
             if (!chrome.runtime.lastError && tab) {
                 chrome.tabs.remove(streamTabId, () => {
                     streamTabId = null;
+                    // если в streamWindow больше нет вкладок — оставляем окно и переводим его на about:blank
+                    try {
+                        chrome.windows.get(streamWindowId, { populate: true }, (w) => {
+                            if (!chrome.runtime.lastError && w && w.tabs && w.tabs.length === 0) {
+                                // оставляем окно, но сбрасываем содержимое на about:blank
+                                chrome.windows.update(streamWindowId, { focused: false }, () => {});
+                            }
+                        });
+                    } catch (e) {}
                     cb && cb();
                 });
             } else {
@@ -253,7 +356,10 @@ function watchNextChannel() {
             setStreamTab(url, () => {
                 const waitSec = waitBeforeCheck !== undefined ? waitBeforeCheck : defaultWaitBeforeCheck;
                 log(`Ждем ${waitSec} сек. перед проверкой ссылки...`);
-                setTimeout(() => {
+                // очищаем любые ранее запланированные проверки
+                if (scheduledCheckTimeout) { clearTimeout(scheduledCheckTimeout); scheduledCheckTimeout = null; }
+                scheduledCheckTimeout = setTimeout(() => {
+                    scheduledCheckTimeout = null;
                     checkChannel(streamTabId, url, watchTime || defaultWatchTime, 1, maxAttempts);
                 }, waitSec * 1000);
             });
@@ -268,14 +374,18 @@ function checkChannel(tabId, url, watchTime, attempt = 1, maxAttempts = 3) {
         chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
             userPrevTabId = tabs[0] ? tabs[0].id : null;
             switchToTab(tabId, () => {
-                setTimeout(() => {
+                if (pendingDoFindTimeout) { clearTimeout(pendingDoFindTimeout); pendingDoFindTimeout = null; }
+                pendingDoFindTimeout = setTimeout(() => {
+                    pendingDoFindTimeout = null;
                     doFindLink(tabId, url, watchTime, attempt, maxAttempts);
                 }, 1500);
             });
         });
     } else {
         // Уже на вкладке со стримом, просто пробуем снова
-        setTimeout(() => {
+        if (pendingDoFindTimeout) { clearTimeout(pendingDoFindTimeout); pendingDoFindTimeout = null; }
+        pendingDoFindTimeout = setTimeout(() => {
+            pendingDoFindTimeout = null;
             doFindLink(tabId, url, watchTime, attempt, maxAttempts);
         }, 1000);
     }
@@ -398,8 +508,13 @@ function autoRemoveFromBlacklistIfWatchedEnough(url, config) {
 }
 
 function startWatchTimer(tabId, url, watchTime) {
-    let secondsLeft = watchTime;
+    // Инвалидируем предыдущий запуск и увеличиваем runId для этой сессии просмотра
+    const myRunId = ++currentRunId;
+    // вычисляем оставшиеся секунды с учётом уже просмотренного времени
+    const alreadyWatched = totalWatched[url] || 0;
+    let secondsLeft = Math.max(0, watchTime - alreadyWatched);
     currentStreamInfo = { url, secondsLeft };
+    log(`DEBUG: startWatchTimer for ${url}, watchTime=${watchTime}, runId=${myRunId}`);
     let timerStopped = false;
     let linkCheckInterval = null;
     let checkIntervalMs = 2 * 60 * 1000; // по умолчанию 2 минуты
@@ -411,11 +526,21 @@ function startWatchTimer(tabId, url, watchTime) {
             checkIntervalMs = config.checkIntervalMinutes * 60 * 1000;
         }
 
+        // Очищаем предыдущие таймеры (если были) чтобы избежать параллельных интервалов
+        if (watchTimerInterval) { clearInterval(watchTimerInterval); watchTimerInterval = null; }
+        if (watchLinkCheckInterval) { clearInterval(watchLinkCheckInterval); watchLinkCheckInterval = null; }
+
         // Запускаем основной таймер просмотра
-        timerInterval = setInterval(() => {
+        watchTimerInterval = setInterval(() => {
+                    // Защитная проверка: если runId изменился, этот таймер устарел — останавливаем его
+            if (myRunId !== currentRunId) {
+                if (watchTimerInterval) { clearInterval(watchTimerInterval); watchTimerInterval = null; }
+                if (watchLinkCheckInterval) { clearInterval(watchLinkCheckInterval); watchLinkCheckInterval = null; }
+                return;
+            }
             if (!isRunning || timerStopped) {
-                clearInterval(timerInterval);
-                if (linkCheckInterval) clearInterval(linkCheckInterval);
+                if (watchTimerInterval) { clearInterval(watchTimerInterval); watchTimerInterval = null; }
+                if (watchLinkCheckInterval) { clearInterval(watchLinkCheckInterval); watchLinkCheckInterval = null; }
                 currentStreamInfo = { url: null, secondsLeft: 0 };
                 return;
             }
@@ -446,43 +571,83 @@ function startWatchTimer(tabId, url, watchTime) {
 
                 // Если лимит достигнут — ставим permanent, останавливаем таймер и переходим к следующему
                 if (wTime > 0 && totalWatched[url] >= wTime) {
+                    // помечаем канал как постоянный в черном списке и обновляем хранилище
                     if (config.blacklist[url] !== "permanent") {
                         config.blacklist[url] = "permanent";
                         chrome.storage.local.set({ userConfig: config }, () => {
                             log(`Канал ${url} навсегда добавлен в черный список (достигнуто время просмотра).`);
+                            // останавливаем таймеры и переходим к следующему только после обновления хранилища, чтобы избежать гонки
+                            if (watchTimerInterval) { clearInterval(watchTimerInterval); watchTimerInterval = null; }
+                            if (watchLinkCheckInterval) { clearInterval(watchLinkCheckInterval); watchLinkCheckInterval = null; }
+                            timerStopped = true;
+                            currentStreamInfo = { url: null, secondsLeft: 0 };
+                            log(`Время на ${url} истекло (лимит достигнут).`);
+                            nextChannel();
                         });
+                        // возвращаемся сейчас; nextChannel будет вызван в обратном вызове
+                        return;
+                    } else {
+                        // уже постоянный, просто останавливаем и переходим к следующему
+                        if (watchTimerInterval) { clearInterval(watchTimerInterval); watchTimerInterval = null; }
+                        if (watchLinkCheckInterval) { clearInterval(watchLinkCheckInterval); watchLinkCheckInterval = null; }
+                        timerStopped = true;
+                        currentStreamInfo = { url: null, secondsLeft: 0 };
+                        log(`Время на ${url} истекло (лимит достигнут).`);
+                        nextChannel();
+                        return;
                     }
-                    clearInterval(timerInterval);
-                    if (linkCheckInterval) clearInterval(linkCheckInterval);
-                    timerStopped = true;
-                    currentStreamInfo = { url: null, secondsLeft: 0 };
-                    log(`Время на ${url} истекло (лимит достигнут).`);
-                    nextChannel();
-                    return;
                 }
 
                 // Если лимит не достигнут — продолжаем отсчет
+                // (secondsLeft уже учитывает ранее просмотренное время)
                 secondsLeft--;
                 currentStreamInfo = { url, secondsLeft };
                 if (!totalWatched[url]) totalWatched[url] = 0;
                 totalWatched[url]++;
-                chrome.storage.local.set({ totalWatched });
-
-                if (secondsLeft <= 0) {
-                    clearInterval(timerInterval);
-                    if (linkCheckInterval) clearInterval(linkCheckInterval);
-                    timerStopped = true;
-                    currentStreamInfo = { url: null, secondsLeft: 0 };
-                    log(`Время на ${url} истекло.`);
-                    nextChannel();
-                }
+                // диагностический лог для каждого увеличения
+                log(`DEBUG: incremented watched for ${url} -> ${totalWatched[url]}s (secondsLeft=${secondsLeft}) runId=${myRunId}`);
+                // Сохраняем totalWatched немедленно
+                chrome.storage.local.set({ totalWatched }, () => {
+                    // После сохранения проверяем, достигли ли мы установленного времени просмотра, и помечаем как постоянный
+                    if (wTime > 0 && totalWatched[url] >= wTime) {
+                        if (config && typeof config.blacklist === 'object') {
+                            if (config.blacklist[url] !== 'permanent') {
+                                config.blacklist[url] = 'permanent';
+                                chrome.storage.local.set({ userConfig: config }, () => {
+                                    log(`Канал ${url} навсегда добавлен в черный список (достигнуто время просмотра).`);
+                                    if (watchTimerInterval) { clearInterval(watchTimerInterval); watchTimerInterval = null; }
+                                    if (watchLinkCheckInterval) { clearInterval(watchLinkCheckInterval); watchLinkCheckInterval = null; }
+                                    timerStopped = true;
+                                    currentStreamInfo = { url: null, secondsLeft: 0 };
+                                    log(`Время на ${url} истекло (лимит достигнут).`);
+                                    nextChannel();
+                                });
+                                return;
+                            }
+                        }
+                    }
+                    // Если не достигнуто или уже обработано, если secondsLeft достиг нуля, то переходим к следующему
+                    if (secondsLeft <= 0) {
+                        if (watchTimerInterval) { clearInterval(watchTimerInterval); watchTimerInterval = null; }
+                        if (watchLinkCheckInterval) { clearInterval(watchLinkCheckInterval); watchLinkCheckInterval = null; }
+                        timerStopped = true;
+                        currentStreamInfo = { url: null, secondsLeft: 0 };
+                        log(`Время на ${url} истекло.`);
+                        nextChannel();
+                    }
+                });
             });
         }, 1000);
 
         // Запускаем периодическую проверку наличия ссылки
-        linkCheckInterval = setInterval(() => {
+        watchLinkCheckInterval = setInterval(() => {
+            // защита: остановить, если выполнение недействительно
+            if (myRunId !== currentRunId) {
+                if (watchLinkCheckInterval) { clearInterval(watchLinkCheckInterval); watchLinkCheckInterval = null; }
+                return;
+            }
             if (!isRunning || timerStopped) {
-                if (linkCheckInterval) clearInterval(linkCheckInterval);
+                if (watchLinkCheckInterval) { clearInterval(watchLinkCheckInterval); watchLinkCheckInterval = null; }
                 return;
             }
             // Получаем searchUrlPart из конфига
@@ -493,12 +658,14 @@ function startWatchTimer(tabId, url, watchTime) {
                 doFindLink(tabId, url, watchTime, 1, 1, (response) => {
                     if (!response || !response.found) {
                         log(`Ссылка '${searchUrlPart}' пропала во время просмотра ${url}. Досрочно завершаем просмотр.`);
-                        clearInterval(timerInterval);
-                        if (linkCheckInterval) clearInterval(linkCheckInterval);
+                        if (watchTimerInterval) { clearInterval(watchTimerInterval); watchTimerInterval = null; }
+                        if (watchLinkCheckInterval) { clearInterval(watchLinkCheckInterval); watchLinkCheckInterval = null; }
                         timerStopped = true;
                         currentStreamInfo = { url: null, secondsLeft: 0 };
                         // Добавляем канал в ЧС на время просмотра
                         addToBlacklist(url, watchTime);
+                        // невалидируем любые другие таймеры перед переходом к следующему, чтобы избежать гонок
+                        currentRunId++;
                         nextChannel();
                     }
                 });
@@ -508,13 +675,19 @@ function startWatchTimer(tabId, url, watchTime) {
 }
 
 function nextChannel() {
+    // невалидируем текущий запуск, чтобы любые устаревшие таймеры немедленно завершились
+    currentRunId++;
     if (timerInterval) clearInterval(timerInterval);
+    log(`DEBUG: nextChannel called (from index ${currentChannelIndex}) runId=${currentRunId}`);
     currentChannelIndex++;
+    log(`DEBUG: new currentChannelIndex = ${currentChannelIndex}`);
     if (isRunning) watchNextChannel();
 }
 
 function stopWatching() {
     isRunning = false;
+    // невалидируем текущий запуск
+    currentRunId++;
     if (timerInterval) clearInterval(timerInterval);
     currentStreamInfo = { url: null, secondsLeft: 0 };
     log("Просмотр остановлен.");
@@ -553,14 +726,175 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         sendResponse({ stats: totalWatched });
     }
     if (request.action === "getCurrentStreamInfo") {
-        sendResponse(currentStreamInfo);
+        // возвращаем актуальную информацию о текущем потоке, вычисляя оставшиеся секунды из сохраненного totalWatched
+        const cur = currentStreamInfo && currentStreamInfo.url ? currentStreamInfo : null;
+        if (!cur || !cur.url) {
+            sendResponse({ url: null, secondsLeft: 0 });
+            return;
+        }
+        // Читаем сохраненный totalWatched и userConfig, чтобы вычислить точное оставшееся время
+        chrome.storage.local.get(["userConfig", "totalWatched"], (data) => {
+            const cfg = data.userConfig || {};
+            const persisted = data.totalWatched || {};
+            const url = cur.url;
+            // ищем целевое время просмотра для этого url
+            let targetSec = 0;
+            const channel = (cfg.channels || []).find(ch => (typeof ch === 'string' ? ch : ch.url) === url);
+            if (channel) {
+                targetSec = typeof channel === 'string' ? parseTimeToSeconds(cfg.watchTime) : parseTimeToSeconds(channel.watchTime || cfg.watchTime);
+            } else {
+                targetSec = parseTimeToSeconds(cfg.watchTime) || defaultWatchTime;
+            }
+            const watched = persisted[url] || 0;
+            const remaining = Math.max(0, targetSec - watched);
+            sendResponse({ url, secondsLeft: remaining, watched, targetSec });
+        });
+        return true;
+    }
+    if (request.action === "switchToChannel" && request.url) {
+        // немедленно переключаем вкладку потока на предоставленный url и, если запущено, начинаем его проверку
+        chrome.storage.local.get("userConfig", (data) => {
+            const cfg = data.userConfig || {};
+            const ch = (cfg.channels || []).find(c => (typeof c === 'string' ? c : c.url) === request.url);
+            const wt = ch ? (typeof ch === 'string' ? parseTimeToSeconds(cfg.watchTime) : parseTimeToSeconds((typeof ch === 'string' ? {} : ch).watchTime || cfg.watchTime)) : defaultWatchTime;
+            const waitSec = (ch && typeof ch === 'object' && ch.waitBeforeCheck !== undefined) ? ch.waitBeforeCheck : (cfg.waitBeforeCheck !== undefined ? cfg.waitBeforeCheck : defaultWaitBeforeCheck);
+            const maxAttempts = (cfg && typeof cfg.maxAttempts === 'number') ? cfg.maxAttempts : 3;
+            setStreamTab(request.url, () => {
+                // невалидируем текущий запуск и очищаем предыдущие таймеры/временные интервалы, чтобы избежать неправильной атрибуции
+                currentRunId++;
+                if (watchTimerInterval) { clearInterval(watchTimerInterval); watchTimerInterval = null; }
+                if (watchLinkCheckInterval) { clearInterval(watchLinkCheckInterval); watchLinkCheckInterval = null; }
+                if (scheduledCheckTimeout) { clearTimeout(scheduledCheckTimeout); scheduledCheckTimeout = null; }
+                if (pendingDoFindTimeout) { clearTimeout(pendingDoFindTimeout); pendingDoFindTimeout = null; }
+                // вычисляем оставшиеся секунды, чтобы всплывающее окно показывало точное оставшееся время
+                const watchedForSwitch = totalWatched[request.url] || 0;
+                const remainingForSwitch = Math.max(0, wt - watchedForSwitch);
+                currentStreamInfo = { url: request.url, secondsLeft: remainingForSwitch };
+                if (isRunning) {
+                    // выполняем тот же поток проверки, что и watchNextChannel для этого канала
+                    setTimeout(() => {
+                        checkChannel(streamTabId, request.url, wt, 1, maxAttempts);
+                    }, (waitSec || defaultWaitBeforeCheck) * 1000);
+                }
+                sendResponse({ ok: true });
+            });
+        });
+        return true; // async
+    }
+    if (request.action === "getWatchPercent" && request.url) {
+        chrome.storage.local.get(["userConfig", "totalWatched"], (data) => {
+            const config = data.userConfig || {};
+            const totalWatched = data.totalWatched || {};
+            const url = request.url;
+            let targetSec = 0;
+            const channel = (config.channels || []).find(ch => (typeof ch === 'string' ? ch : ch.url) === url);
+            if (channel) {
+                targetSec = typeof channel === 'string' ? parseTimeToSeconds(config.watchTime) : parseTimeToSeconds(channel.watchTime || config.watchTime);
+            } else {
+                targetSec = parseTimeToSeconds(config.watchTime) || defaultWatchTime;
+            }
+            const watched = totalWatched[url] || 0;
+            const percent = targetSec > 0 ? Math.min(100, Math.round((watched / targetSec) * 100)) : 0;
+            sendResponse({ percent, watched, targetSec });
+        });
+        return true;
+    }
+    if (request.action === "openStreamWindow") {
+        ensureStreamWindow(() => sendResponse({ ok: true, windowId: streamWindowId }));
+        return true;
+    }
+    if (request.action === "manualNext") {
+        // переключиться на следующий активный канал
+        chrome.storage.local.get(["userConfig", "totalWatched"], (data) => {
+            const config = data.userConfig || {};
+            const cfgChannels = Array.isArray(config.channels) ? config.channels : [];
+            if (cfgChannels.length === 0) { sendResponse({ ok: false, reason: 'no channels' }); return; }
+            // нормализуем каналы в объекты
+            const chs = cfgChannels.map(ch => typeof ch === 'string' ? { url: ch } : ch);
+            // находим следующий, который не в черном списке
+            let start = currentChannelIndex + 1;
+            let found = -1;
+            for (let i = 0; i < chs.length; i++) {
+                const idx = (start + i) % chs.length;
+                const url = chs[idx].url;
+                const black = config.blacklist && config.blacklist[url];
+                if (!black) { found = idx; break; }
+            }
+            if (found === -1) { sendResponse({ ok: false, reason: 'no active channels' }); return; }
+            currentChannelIndex = found;
+            const sel = chs[found];
+            const wt = sel.watchTime ? parseTimeToSeconds(sel.watchTime) : (config.watchTime ? parseTimeToSeconds(config.watchTime) : defaultWatchTime);
+            const waitSec = sel.waitBeforeCheck !== undefined ? sel.waitBeforeCheck : (config.waitBeforeCheck !== undefined ? config.waitBeforeCheck : defaultWaitBeforeCheck);
+            const maxAttempts = (config && typeof config.maxAttempts === 'number') ? config.maxAttempts : 3;
+            // невалидируем текущий запуск и очищаем предыдущие таймеры/временные интервалы, чтобы избежать неправильной атрибуции
+            currentRunId++;
+            if (watchTimerInterval) { clearInterval(watchTimerInterval); watchTimerInterval = null; }
+            if (watchLinkCheckInterval) { clearInterval(watchLinkCheckInterval); watchLinkCheckInterval = null; }
+            if (scheduledCheckTimeout) { clearTimeout(scheduledCheckTimeout); scheduledCheckTimeout = null; }
+            if (pendingDoFindTimeout) { clearTimeout(pendingDoFindTimeout); pendingDoFindTimeout = null; }
+            setStreamTab(sel.url, () => {
+                // выполняем ту же проверку, что и watchNextChannel для этого канала
+                // Обновляем currentStreamInfo немедленно, чтобы всплывающее окно показывало новое выделение (оставшееся время)
+                const watchedForSel = totalWatched[sel.url] || 0;
+                const remainingForSel = Math.max(0, wt - watchedForSel);
+                currentStreamInfo = { url: sel.url, secondsLeft: remainingForSel };
+                scheduledCheckTimeout = setTimeout(() => {
+                    scheduledCheckTimeout = null;
+                    checkChannel(streamTabId, sel.url, wt, 1, maxAttempts);
+                }, (waitSec || defaultWaitBeforeCheck) * 1000);
+                sendResponse({ ok: true, url: sel.url });
+            });
+        });
+        return true;
+    }
+    if (request.action === "manualPrev") {
+        // переключиться на предыдущий активный канал
+        chrome.storage.local.get(["userConfig", "totalWatched"], (data) => {
+            const config = data.userConfig || {};
+            const cfgChannels = Array.isArray(config.channels) ? config.channels : [];
+            if (cfgChannels.length === 0) { sendResponse({ ok: false, reason: 'no channels' }); return; }
+            const chs = cfgChannels.map(ch => typeof ch === 'string' ? { url: ch } : ch);
+            let start = currentChannelIndex - 1;
+            if (start < 0) start = chs.length - 1;
+            let found = -1;
+            for (let i = 0; i < chs.length; i++) {
+                const idx = (start - i + chs.length) % chs.length;
+                const url = chs[idx].url;
+                const black = config.blacklist && config.blacklist[url];
+                if (!black) { found = idx; break; }
+            }
+            if (found === -1) { sendResponse({ ok: false, reason: 'no active channels' }); return; }
+            currentChannelIndex = found;
+            const sel = chs[found];
+            const wt = sel.watchTime ? parseTimeToSeconds(sel.watchTime) : (config.watchTime ? parseTimeToSeconds(config.watchTime) : defaultWatchTime);
+            const waitSec = sel.waitBeforeCheck !== undefined ? sel.waitBeforeCheck : (config.waitBeforeCheck !== undefined ? config.waitBeforeCheck : defaultWaitBeforeCheck);
+            const maxAttempts = (config && typeof config.maxAttempts === 'number') ? config.maxAttempts : 3;
+            // невалидируем текущий запуск и очищаем предыдущие таймеры/временные интервалы, чтобы избежать неправильной атрибуции
+            currentRunId++;
+            if (watchTimerInterval) { clearInterval(watchTimerInterval); watchTimerInterval = null; }
+            if (watchLinkCheckInterval) { clearInterval(watchLinkCheckInterval); watchLinkCheckInterval = null; }
+            if (scheduledCheckTimeout) { clearTimeout(scheduledCheckTimeout); scheduledCheckTimeout = null; }
+            if (pendingDoFindTimeout) { clearTimeout(pendingDoFindTimeout); pendingDoFindTimeout = null; }
+            setStreamTab(sel.url, () => {
+                // Обновляем currentStreamInfo немедленно, чтобы всплывающее окно показывало новое выделение (оставшееся время)
+                const watchedForSelPrev = totalWatched[sel.url] || 0;
+                const remainingForSelPrev = Math.max(0, wt - watchedForSelPrev);
+                currentStreamInfo = { url: sel.url, secondsLeft: remainingForSelPrev };
+                scheduledCheckTimeout = setTimeout(() => {
+                    scheduledCheckTimeout = null;
+                    checkChannel(streamTabId, sel.url, wt, 1, maxAttempts);
+                }, (waitSec || defaultWaitBeforeCheck) * 1000);
+                sendResponse({ ok: true, url: sel.url });
+            });
+        });
+        return true;
     }
     if (request.action === "clearLogs") {
         logBuffer = [];
         chrome.storage.local.set({ logBuffer }, () => {
             sendResponse && sendResponse();
         });
-        return true; // async response
+        return true; // асинхронный ответ
     }
     if (request.action === "resetWatchTime" && request.url) {
         // Сбрасываем время и сохраняем даже если оно было 0
@@ -569,7 +903,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             log(`Суммарное время просмотра для ${request.url} сброшено.`);
             if (typeof sendResponse === "function") sendResponse();
         });
-        return true; // async response
+        return true; // асинхронный ответ
     }
     if (request.action === "setLoggingEnabled") {
         setLoggingEnabled(!!request.enabled);
@@ -643,3 +977,20 @@ function safeSendMessage(tabId, message, callback) {
         if (callback) callback(undefined);
     }
 }
+
+// Очистка state при закрытии вкладки/окна
+chrome.tabs.onRemoved.addListener((tabId, removeInfo) => {
+    if (tabId === streamTabId) {
+        streamTabId = null;
+    }
+    if (tabId === activeTabId) {
+        activeTabId = null;
+    }
+});
+
+chrome.windows.onRemoved.addListener((windowId) => {
+    if (windowId === streamWindowId) {
+        streamWindowId = null;
+        streamTabId = null;
+    }
+});

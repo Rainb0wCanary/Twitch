@@ -14,16 +14,16 @@ document.addEventListener("DOMContentLoaded", () => {
                         // Удаляем прошлый конфиг перед загрузкой нового
                         chrome.storage.local.remove("userConfig", () => {
                             chrome.storage.local.set({ userConfig: config }, () => {
-                                alert("Конфиг успешно загружен!");
+                                showAlert("Конфиг успешно загружен!");
                             });
                         });
                     } else {
-                        alert("В конфиге отсутствует searchUrlPart!");
+                        showAlert("В конфиге отсутствует searchUrlPart!");
                     }
                 } catch {
                     // Удаляем прошлый конфиг если новый некорректен
                     chrome.storage.local.remove("userConfig", () => {
-                        alert("Ошибка чтения файла конфига! Прошлый конфиг удалён.");
+                        showAlert("Ошибка чтения файла конфига! Прошлый конфиг удалён.");
                     });
                 }
             };
@@ -45,7 +45,7 @@ document.addEventListener("DOMContentLoaded", () => {
                     return;
                 }
                 startBtn.disabled = true;
-                chrome.runtime.sendMessage({ action: "startWatching" });
+                chrome.runtime.sendMessage({ action: "startWatching" }, () => { if (chrome.runtime.lastError) {/*ignore*/} });
                 setTimeout(() => {
                     updateCurrentTimer();
                     checkConfigAndStatus();
@@ -56,11 +56,29 @@ document.addEventListener("DOMContentLoaded", () => {
 
     if (stopBtn) {
         stopBtn.addEventListener("click", () => {
-            chrome.runtime.sendMessage({ action: "stopWatching" });
+            chrome.runtime.sendMessage({ action: "stopWatching" }, () => { if (chrome.runtime.lastError) {/*ignore*/} });
             setTimeout(() => {
                 updateCurrentTimer();
                 checkConfigAndStatus();
             }, 500);
+        });
+    }
+
+    // Кнопки 'Предыдущий'/'Следующий'
+    const prevBtn = document.getElementById('prevButton');
+    const nextBtn = document.getElementById('nextButton');
+    if (prevBtn) {
+        prevBtn.addEventListener('click', () => {
+            chrome.runtime.sendMessage({ action: 'manualPrev' }, (resp) => {
+                if (resp && resp.ok) updateCurrentTimer();
+            });
+        });
+    }
+    if (nextBtn) {
+        nextBtn.addEventListener('click', () => {
+            chrome.runtime.sendMessage({ action: 'manualNext' }, (resp) => {
+                if (resp && resp.ok) updateCurrentTimer();
+            });
         });
     }
 
@@ -140,4 +158,15 @@ function resetWatchTime(url) {
     chrome.runtime.sendMessage({ action: "resetWatchTime", url }, () => {
         // После сброса можно обновить UI, если нужно
     });
+}
+
+// Унифицированные вспомогательные функции для взаимодействия с пользователем (такие же простые обёртки, как в stats.js)
+function showAlert(msg) {
+    try { alert(msg); } catch (e) { console.log('Alert:', msg); }
+}
+function showConfirm(msg) {
+    try { return confirm(msg); } catch (e) { console.log('Confirm:', msg); return false; }
+}
+function showPrompt(msg, def) {
+    try { return prompt(msg, def); } catch (e) { console.log('Prompt:', msg); return null; }
 }
