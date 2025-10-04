@@ -130,4 +130,4 @@ console.log(JSON.stringify({ channels }, null, 2));
 - Telegram: @RainbowCanary
 - Discord: rainbowcanary
 - Mail: rainbowcanaryyt@gmail.com
-- GitHub: rainbowcanary
+- GitHub: RainbowCanary
