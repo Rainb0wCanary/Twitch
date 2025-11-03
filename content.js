@@ -18,16 +18,34 @@ function findAndHighlightLink(searchText) {
         } catch (e) {
             // игнорируем ошибки вставки стиля
         }
-        const links = document.querySelectorAll('a[data-a-target="stream-game-link"]');
-        let foundLink = null;
+        // Собираем ссылки: сначала специфичный селектор для Twitch, но если его нет — берем все ссылки на странице
+            let links = Array.from(document.querySelectorAll('a[data-a-target="stream-game-link"]'));
+            if (!links || links.length === 0) links = Array.from(document.querySelectorAll('a'));
+            let foundLink = null;
 
-    // Нормализуем searchText
-        const needle = (typeof searchText === 'string' ? searchText.trim().toLowerCase() : '');
+        // Нормализуем searchText
+            const rawNeedle = (typeof searchText === 'string' ? searchText.trim() : '');
+            const needle = rawNeedle.toLowerCase();
 
-    // Предпочтение совпадениям в верхней области; иначе принимаем любой видимый результат
-        let fallbackMatch = null;
-        for (let i = 0; i < links.length; i++) {
-            const link = links[i];
+        // Проверяем, является ли needle абсолютным URL (режим поиска по URL/категории платформы)
+            let needleIsAbsoluteUrl = false;
+            let needleUrl = null;
+            try {
+                if (rawNeedle.match(/^https?:\/\//i)) {
+                    needleIsAbsoluteUrl = true;
+                    needleUrl = new URL(rawNeedle);
+                    // нормализуем путь без хвостовых слэшей
+                    needleUrl.pathname = needleUrl.pathname.replace(/\/+$|^\/+/g, '/');
+                }
+            } catch (e) {
+                needleIsAbsoluteUrl = false;
+                needleUrl = null;
+            }
+
+        // Предпочтение совпадениям в верхней области; иначе принимаем любой видимый результат
+            let fallbackMatch = null;
+            for (let i = 0; i < links.length; i++) {
+                const link = links[i];
             try {
                 const href = link.href || '';
                 const rect = link.getBoundingClientRect();
@@ -35,25 +53,47 @@ function findAndHighlightLink(searchText) {
                 const inTopArea = rect.top >= 0 && rect.top < (window.innerHeight / 2);
 
                 if (!visible) continue;
+                    // Если пустой needle — возвращаем первую видимую ссылку
+                    if (needle === '') {
+                        foundLink = link;
+                        break;
+                    }
 
-                if (needle === '') {
-                    foundLink = link;
-                    break;
-                }
+                    // Если поисковая строка — абсолютный URL, то сравниваем origin + pathname (без query/hash)
+                    if (needleIsAbsoluteUrl && needleUrl) {
+                        try {
+                            const urlObj = new URL(href, location.href);
+                            // нормализуем пути: убираем хвостовые слэши
+                            const p1 = (urlObj.pathname || '').replace(/\/+$|^\/+/g, '/').toLowerCase();
+                            const p2 = (needleUrl.pathname || '').replace(/\/+$|^\/+/g, '/').toLowerCase();
+                            const sameOrigin = urlObj.origin.toLowerCase() === needleUrl.origin.toLowerCase();
+                            const pathMatches = p1.startsWith(p2);
+                            if (sameOrigin && pathMatches) {
+                                // предпочитаем совпадение в верхней области
+                                if (inTopArea) { foundLink = link; break; }
+                                if (!fallbackMatch) fallbackMatch = link;
+                                continue;
+                            }
+                        } catch (e) {
+                            // если парсинг упал — продолжаем к общему поиску
+                        }
+                    }
 
-                const text = (link.textContent || '').trim().toLowerCase();
-                const hrefMatch = href.toLowerCase().includes(needle);
-                const textMatch = text && text.includes(needle);
+                    // Обычная логика: совпадение по href или по тексту ссылки (case-insensitive)
+                    const text = (link.textContent || '').trim().toLowerCase();
+                    const hrefLower = href.toLowerCase();
+                    const hrefMatch = hrefLower.includes(needle);
+                    const textMatch = text && text.includes(needle);
 
-                // предпочитаем совпадение в верхней области
-                if ((hrefMatch || textMatch) && inTopArea) {
-                    foundLink = link;
-                    break;
-                }
-                // иначе запоминаем первое видимое совпадение как запасной вариант
-                if ((hrefMatch || textMatch) && !fallbackMatch) {
-                    fallbackMatch = link;
-                }
+                    // предпочитаем совпадение в верхней области
+                    if ((hrefMatch || textMatch) && inTopArea) {
+                        foundLink = link;
+                        break;
+                    }
+                    // иначе запоминаем первое видимое совпадение как запасной вариант
+                    if ((hrefMatch || textMatch) && !fallbackMatch) {
+                        fallbackMatch = link;
+                    }
             } catch (e) {
                 continue;
             }

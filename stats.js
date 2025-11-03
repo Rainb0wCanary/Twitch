@@ -320,6 +320,8 @@ document.addEventListener("DOMContentLoaded", () => {
                     if (config && config.searchUrlPart) {
                         chrome.storage.local.set({ userConfig: config }, () => {
                             showAlert("Конфиг успешно загружен!");
+                            // Обновляем значения формы конфигурации сразу после загрузки
+                            try { loadConfigForm(); } catch (e) { /* если функция недоступна — игнорируем */ }
                             pollStats();
                         });
                     } else {

@@ -1,36 +1,50 @@
 {
-  "searchUrlPart": "counter-strike",
+  "searchUrlPart": "https://kick.com/category/rust",
   "checkIntervalMinutes": 5,
 
   "channels": [
     {
-      "url": "https://www.twitch.tv/koma",
-      "watchTime": "00.00.30"
+      "url": "https://kick.com/wabbit",
+      "watchTime": "2.00.30"
     },
     {
-      "url": "https://www.twitch.tv/avice",
-      "watchTime": "00.00.30"
+      "url": "https://kick.com/category/rust/drops",
+      "watchTime": "2.00.30"
     },
     {
-      "url": "https://www.twitch.tv/eslcs",
-      "watchTime": "00.00.30"
+      "url": "https://kick.com/category/rust/drops",
+      "watchTime": "2.00.30"
     },
     {
-      "url": "https://www.twitch.tv/seoi1016",
-      "watchTime": "00.00.30"
+      "url": "https://kick.com/category/rust/drops",
+      "watchTime": "2.00.30"
     },
     {
-      "url": "https://www.twitch.tv/evelone2004",
-      "watchTime": "00.00.30"
+      "url": "https://kick.com/category/rust/drops",
+      "watchTime": "2.00.30"
     },
     {
-      "url": "",
-      "watchTime": "00.00.30"
+      "url": "https://kick.com/category/rust/drops",
+      "watchTime": "2.00.30"
+    },
+    {
+      "url": "https://kick.com/category/rust/drops",
+      "watchTime": "2.00.30"
+    },
+    {
+      "url": "https://kick.com/category/rust/drops",
+      "watchTime": "2.00.30"
+    },
+    {
+      "url": "https://kick.com/category/rust/drops",
+      "watchTime": "2.00.30"
+    },
+    {
+      "url": "https://kick.com/category/rust/drops",
+      "watchTime": "2.00.30"
     }
-
-
-
   ],
+
   "waitBeforeCheck": 20,
   "maxAttempts": 5,
   "tempBlacklistSeconds": "0.00.30"
