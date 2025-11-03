@@ -1,47 +1,15 @@
 {
   "searchUrlPart": "https://kick.com/category/rust",
-  "checkIntervalMinutes": 5,
+  "checkIntervalMinutes": 1,
 
   "channels": [
     {
       "url": "https://kick.com/wabbit",
-      "watchTime": "2.00.30"
+      "watchTime": "00.20.30"
     },
     {
-      "url": "https://kick.com/category/rust/drops",
-      "watchTime": "2.00.30"
-    },
-    {
-      "url": "https://kick.com/category/rust/drops",
-      "watchTime": "2.00.30"
-    },
-    {
-      "url": "https://kick.com/category/rust/drops",
-      "watchTime": "2.00.30"
-    },
-    {
-      "url": "https://kick.com/category/rust/drops",
-      "watchTime": "2.00.30"
-    },
-    {
-      "url": "https://kick.com/category/rust/drops",
-      "watchTime": "2.00.30"
-    },
-    {
-      "url": "https://kick.com/category/rust/drops",
-      "watchTime": "2.00.30"
-    },
-    {
-      "url": "https://kick.com/category/rust/drops",
-      "watchTime": "2.00.30"
-    },
-    {
-      "url": "https://kick.com/category/rust/drops",
-      "watchTime": "2.00.30"
-    },
-    {
-      "url": "https://kick.com/category/rust/drops",
-      "watchTime": "2.00.30"
+      "url": "https://kick.com/krolay",
+      "watchTime": "00.20.30"
     }
   ],
 

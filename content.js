@@ -112,7 +112,16 @@ function findAndHighlightLink(searchText) {
             } catch (e) {
                 // игнорируем ошибки модификации DOM
             }
-            return { found: true, href: foundLink.href, position: { x: rect.left, y: rect.top } };
+            // Возвращаем дополнительную информацию: текущий URL страницы и текст ссылки (имя категории)
+            return {
+                found: true,
+                href: foundLink.href,
+                position: { x: rect.left, y: rect.top },
+                pageUrl: location.href,
+                pagePathname: location.pathname,
+                pageHost: location.host,
+                linkText: (foundLink.textContent || '').trim()
+            };
         }
         console.log("Ссылка не найдена (content.js).");
         return { found: false };
