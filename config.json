@@ -1,59 +1,124 @@
 {
   "searchUrlPart": "https://www.twitch.tv/directory/category/rust",
   "checkIntervalMinutes": 1,
-    "channels": [
+  "channels": [
     {
       "url": "https://www.twitch.tv/TwitchRivals",
-      "watchTime": "1.00.30"
+      "watchTime": "1.00.00",
+      "dropId": "drop_1"
     },
     {
       "url": "https://www.twitch.tv/TwitchRivals",
-      "watchTime": "2.00.30"
+      "watchTime": "2.00.00",
+      "dropId": "drop_2"
+    },
+     {
+      "url": "https://www.twitch.tv/sdeaton",
+      "watchTime": "2.00.00",
+      "dropId": "drop_3"
     },
     {
       "url": "https://www.twitch.tv/Welyn",
-      "watchTime": "2.00.30"
+      "watchTime": "2.00.00",
+      "dropId": "drop_3"
+    },
+    {
+      "url": "https://www.twitch.tv/ZChum",
+      "watchTime": "2.00.00",
+      "dropId": "drop_3"
     },
     {
       "url": "https://www.twitch.tv/xXxTheFocuSxXx",
-      "watchTime": "2.00.30"
+      "watchTime": "2.00.00",
+      "dropId": "drop_4"
+    },
+    {
+      "url": "https://www.twitch.tv/s3kox",
+      "watchTime": "2.00.00",
+      "dropId": "drop_4"
     },
     {
       "url": "https://www.twitch.tv/Willjum",
-      "watchTime": "2.00.30"
+      "watchTime": "2.00.00",
+      "dropId": "drop_5"
+    },
+    {
+      "url": "https://www.twitch.tv/SinksR",
+      "watchTime": "2.00.00",
+      "dropId": "drop_5"
     },
     {
       "url": "https://www.twitch.tv/hJune",
-      "watchTime": "2.00.30"
+      "watchTime": "2.00.00",
+      "dropId": "drop_6"
+    },
+    {
+      "url": "https://www.twitch.tv/Blooprint",
+      "watchTime": "2.00.00",
+      "dropId": "drop_6"
     },
     {
       "url": "https://www.twitch.tv/Mendo",
-      "watchTime": "2.00.30"
+      "watchTime": "2.00.00",
+      "dropId": "drop_7"
+    },
+    {
+      "url": "https://www.twitch.tv/Picco",
+      "watchTime": "2.00.00",
+      "dropId": "drop_7"
     },
     {
       "url": "https://www.twitch.tv/Dhalucard",
-      "watchTime": "2.00.30"
+      "watchTime": "2.00.00",
+      "dropId": "drop_8"
+    },
+    {
+      "url": "https://www.twitch.tv/Tabsy",
+      "watchTime": "2.00.00",
+      "dropId": "drop_8"
     },
     {
       "url": "https://www.twitch.tv/CoconutB",
-      "watchTime": "2.00.30"
+      "watchTime": "2.00.00",
+      "dropId": "drop_9"
+    },
+    {
+      "url": "https://www.twitch.tv/NoraExplorer",
+      "watchTime": "2.00.00",
+      "dropId": "drop_9"
     },
     {
       "url": "https://www.twitch.tv/Oilrats",
-      "watchTime": "2.00.30"
+      "watchTime": "2.00.00",
+      "dropId": "drop_10"
+    },
+    {
+      "url": "https://www.twitch.tv/Posty",
+      "watchTime": "2.00.00",
+      "dropId": "drop_10"
     },
     {
       "url": "https://www.twitch.tv/Nikof",
-      "watchTime": "2.00.30"
+      "watchTime": "2.00.00",
+      "dropId": "drop_11"
+    },
+    {
+      "url": "https://www.twitch.tv/ElMamene",
+      "watchTime": "2.00.00",
+      "dropId": "drop_11"
     },
     {
       "url": "https://www.twitch.tv/Junin",
-      "watchTime": "2.00.30"
+      "watchTime": "2.00.00",
+      "dropId": "drop_12"
+    },
+    {
+      "url": "https://www.twitch.tv/Toddynho",
+      "watchTime": "2.00.00",
+      "dropId": "drop_12"
     }
   ],
-  
   "waitBeforeCheck": 20,
   "maxAttempts": 5,
-  "tempBlacklistSeconds": "0.00.30"
+  "tempBlacklistSeconds": "0.05.00"
 }
-

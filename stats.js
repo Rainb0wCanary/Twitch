@@ -6,6 +6,219 @@ function secondsToHMS(sec) {
     return `${h}:${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}`;
 }
 
+// Функции для работы с группами
+function getDropGroups(config) {
+    const groups = {};
+    if (!config || !Array.isArray(config.channels)) return groups;
+    
+    config.channels.forEach(ch => {
+        if (typeof ch === 'object' && ch.dropId) {
+            if (!groups[ch.dropId]) {
+                groups[ch.dropId] = {
+                    dropId: ch.dropId,
+                    watchTime: ch.watchTime,
+                    channels: []
+                };
+            }
+            groups[ch.dropId].channels.push(ch.url);
+        }
+    });
+    
+    return groups;
+}
+
+function renderGroupsView() {
+    const container = document.getElementById('groupsContainer');
+    if (!container) return;
+    
+    chrome.storage.local.get(['userConfig', 'totalWatched'], (data) => {
+        const config = data.userConfig || { channels: [] };
+        const totalWatched = data.totalWatched || {};
+        const groups = getDropGroups(config);
+        
+        container.innerHTML = '';
+        
+        if (Object.keys(groups).length === 0) {
+            container.innerHTML = '<p style="color:#888;padding:12px;">Нет групп дропов. Каналы без dropId не группируются.</p>';
+            return;
+        }
+        
+        Object.values(groups).forEach(group => {
+            const groupDiv = document.createElement('div');
+            groupDiv.className = 'card';
+            groupDiv.style.marginBottom = '12px';
+            groupDiv.style.padding = '12px';
+            groupDiv.style.border = '1px solid #444';
+            
+            // Вычисляем суммарное время группы
+            let groupTotalTime = 0;
+            group.channels.forEach(url => {
+                groupTotalTime += (totalWatched[url] || 0);
+            });
+            
+            const targetSeconds = parseTimeToSeconds(group.watchTime);
+            const progress = targetSeconds > 0 ? Math.min(100, Math.round((groupTotalTime / targetSeconds) * 100)) : 0;
+            
+            groupDiv.innerHTML = `
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+                    <h3 style="margin:0;color:#4a9eff;">${group.dropId}</h3>
+                    <div style="display:flex;gap:8px;">
+                        <button class="btn btn-sm btn-accent edit-group-btn" data-dropid="${group.dropId}">Изменить</button>
+                        <button class="btn btn-sm btn-danger delete-group-btn" data-dropid="${group.dropId}">Удалить группу</button>
+                    </div>
+                </div>
+                <div style="margin-bottom:8px;">
+                    <strong>Целевое время:</strong> ${secondsToHMS(targetSeconds)} | 
+                    <strong>Просмотрено:</strong> ${secondsToHMS(groupTotalTime)} | 
+                    <strong>Прогресс:</strong> ${progress}%
+                </div>
+                <div style="background:#333;height:8px;border-radius:4px;overflow:hidden;margin-bottom:8px;">
+                    <div style="background:#4a9eff;height:100%;width:${progress}%;transition:width 0.3s;"></div>
+                </div>
+                <div style="margin-bottom:8px;"><strong>Каналы в группе:</strong></div>
+                <ul style="margin:0;padding-left:20px;" id="group-${group.dropId}-channels"></ul>
+                <div style="margin-top:8px;">
+                    <input type="text" id="add-to-group-${group.dropId}" placeholder="https://www.twitch.tv/..." style="width:calc(100% - 120px);margin-right:8px;">
+                    <button class="btn btn-sm btn-primary add-to-group-btn" data-dropid="${group.dropId}">Добавить канал</button>
+                </div>
+            `;
+            
+            container.appendChild(groupDiv);
+            
+            // Заполняем список каналов
+            const channelsList = document.getElementById(`group-${group.dropId}-channels`);
+            group.channels.forEach(url => {
+                const li = document.createElement('li');
+                const watched = totalWatched[url] || 0;
+                li.innerHTML = `
+                    <a href="${url}" target="_blank" style="color:#4a9eff;">${url}</a> 
+                    <span style="color:#888;">(${secondsToHMS(watched)})</span>
+                    <button class="btn btn-sm btn-danger remove-from-group-btn" data-url="${url}" data-dropid="${group.dropId}" style="margin-left:8px;">Удалить</button>
+                `;
+                channelsList.appendChild(li);
+            });
+        });
+        
+        // Обработчики для групп
+        attachGroupHandlers();
+    });
+}
+
+function attachGroupHandlers() {
+    // Редактирование группы
+    document.querySelectorAll('.edit-group-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const dropId = btn.getAttribute('data-dropid');
+            chrome.storage.local.get('userConfig', (data) => {
+                const config = data.userConfig || { channels: [] };
+                const newDropId = prompt('Новый ID группы:', dropId);
+                if (!newDropId || newDropId === dropId) return;
+                
+                // Обновляем dropId для всех каналов группы
+                config.channels = config.channels.map(ch => {
+                    if (typeof ch === 'object' && ch.dropId === dropId) {
+                        return { ...ch, dropId: newDropId };
+                    }
+                    return ch;
+                });
+                
+                chrome.storage.local.set({ userConfig: config }, () => {
+                    renderGroupsView();
+                    pollStats();
+                });
+            });
+        });
+    });
+    
+    // Удаление группы
+    document.querySelectorAll('.delete-group-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const dropId = btn.getAttribute('data-dropid');
+            if (!confirm(`Удалить группу "${dropId}" и все её каналы?`)) return;
+            
+            chrome.storage.local.get('userConfig', (data) => {
+                const config = data.userConfig || { channels: [] };
+                config.channels = config.channels.filter(ch => {
+                    return !(typeof ch === 'object' && ch.dropId === dropId);
+                });
+                
+                chrome.storage.local.set({ userConfig: config }, () => {
+                    renderGroupsView();
+                    pollStats();
+                });
+            });
+        });
+    });
+    
+    // Добавление канала в группу
+    document.querySelectorAll('.add-to-group-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const dropId = btn.getAttribute('data-dropid');
+            const input = document.getElementById(`add-to-group-${dropId}`);
+            const url = input.value.trim();
+            
+            if (!url) {
+                alert('Введите URL канала');
+                return;
+            }
+            
+            chrome.storage.local.get('userConfig', (data) => {
+                const config = data.userConfig || { channels: [] };
+                
+                // Проверяем, что канал ещё не в конфиге
+                const exists = config.channels.some(ch => {
+                    const chUrl = typeof ch === 'string' ? ch : ch.url;
+                    return chUrl === url;
+                });
+                
+                if (exists) {
+                    alert('Этот канал уже есть в конфигурации');
+                    return;
+                }
+                
+                // Получаем watchTime из группы
+                const group = config.channels.find(ch => typeof ch === 'object' && ch.dropId === dropId);
+                const watchTime = group ? group.watchTime : '2.00.00';
+                
+                config.channels.push({
+                    url,
+                    watchTime,
+                    dropId
+                });
+                
+                chrome.storage.local.set({ userConfig: config }, () => {
+                    input.value = '';
+                    renderGroupsView();
+                    pollStats();
+                });
+            });
+        });
+    });
+    
+    // Удаление канала из группы
+    document.querySelectorAll('.remove-from-group-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const url = btn.getAttribute('data-url');
+            const dropId = btn.getAttribute('data-dropid');
+            
+            if (!confirm(`Удалить канал ${url} из группы?`)) return;
+            
+            chrome.storage.local.get('userConfig', (data) => {
+                const config = data.userConfig || { channels: [] };
+                config.channels = config.channels.filter(ch => {
+                    if (typeof ch === 'string') return true;
+                    return !(ch.url === url && ch.dropId === dropId);
+                });
+                
+                chrome.storage.local.set({ userConfig: config }, () => {
+                    renderGroupsView();
+                    pollStats();
+                });
+            });
+        });
+    });
+}
+
 // Унифицированные вспомогательные функции для сообщений (можно заменить на UI позже)
 function showAlert(msg) {
     try { alert(msg); } catch (e) { console.log('Alert:', msg); }
@@ -26,29 +239,238 @@ function msToHMS(ms) {
     return `${h}:${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}`;
 }
 
+// Обработчики для групповых кнопок в таблице
+function attachGroupRowHandlers() {
+    // Редактирование группы (изменение ID)
+    document.querySelectorAll('.edit-group-row-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const dropId = btn.getAttribute('data-dropid');
+            const newDropId = prompt('Новый ID группы:', dropId);
+            if (!newDropId || newDropId === dropId) return;
+            
+            chrome.storage.local.get('userConfig', (data) => {
+                const config = data.userConfig || { channels: [] };
+                config.channels = config.channels.map(ch => {
+                    if (typeof ch === 'object' && ch.dropId === dropId) {
+                        return { ...ch, dropId: newDropId };
+                    }
+                    return ch;
+                });
+                
+                chrome.storage.local.set({ userConfig: config }, () => {
+                    pollStats();
+                    renderGroupsView();
+                });
+            });
+        });
+    });
+    
+    // Удаление группы
+    document.querySelectorAll('.delete-group-row-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const dropId = btn.getAttribute('data-dropid');
+            if (!confirm(`Удалить группу "${dropId}" и все её каналы?`)) return;
+            
+            chrome.storage.local.get('userConfig', (data) => {
+                const config = data.userConfig || { channels: [] };
+                config.channels = config.channels.filter(ch => {
+                    return !(typeof ch === 'object' && ch.dropId === dropId);
+                });
+                
+                chrome.storage.local.set({ userConfig: config }, () => {
+                    pollStats();
+                    renderGroupsView();
+                });
+            });
+        });
+    });
+    
+        // Сброс времени группы
+    document.querySelectorAll('.reset-group-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const dropId = btn.getAttribute('data-dropid');
+            chrome.storage.local.get(['userConfig', 'totalWatched'], (data) => {
+                const config = data.userConfig || { channels: [] };
+                const totalWatched = data.totalWatched || {};
+                
+                // Находим все каналы этой группы
+                const channelsInGroup = config.channels.filter(ch => typeof ch === 'object' && ch.dropId === dropId).map(ch => ch.url);
+                
+                // Сбрасываем время для всех каналов группы
+                channelsInGroup.forEach(url => {
+                    totalWatched[url] = 0;
+                });
+                
+                chrome.storage.local.set({ totalWatched }, () => {
+                    pollStats();
+                });
+            });
+        });
+    });
+    
+    // Блокировка каналов в группе (индивидуально для каждого канала)
+    document.querySelectorAll('.blacklist-group-toggle-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const dropId = btn.getAttribute('data-dropid');
+            const isUnblock = btn.textContent.trim() === 'Разбл.';
+            
+            chrome.storage.local.get(['userConfig', 'totalWatched'], (data) => {
+                const config = data.userConfig || { channels: [] };
+                if (typeof config.blacklist !== 'object' || Array.isArray(config.blacklist)) config.blacklist = {};
+                
+                // Находим все каналы этой группы
+                const channelsInGroup = config.channels.filter(ch => typeof ch === 'object' && ch.dropId === dropId).map(ch => ch.url);
+                
+                if (isUnblock) {
+                    // Разблокируем все каналы группы (каждый независимо)
+                    channelsInGroup.forEach(url => {
+                        delete config.blacklist[url];
+                    });
+                } else {
+                    // Блокируем каждый канал индивидуально (на время по умолчанию или перманентно)
+                    const tempVal = config.tempBlacklistSeconds || (config.tempBlacklist || null);
+                    if (tempVal) {
+                        const seconds = parseTimeToSeconds(tempVal);
+                        const ts = Date.now() + seconds * 1000;
+                        channelsInGroup.forEach(url => {
+                            config.blacklist[url] = ts;
+                        });
+                    } else {
+                        channelsInGroup.forEach(url => {
+                            config.blacklist[url] = 'permanent';
+                        });
+                    }
+                }
+                
+                chrome.storage.local.set({ userConfig: config }, () => {
+                    pollStats();
+                });
+            });
+        });
+    });
+}
+
 function updateStatsTable(stats) {
     const tbody = document.querySelector("#statsTable tbody");
     if (!tbody) return;
-    // Сохраняем текущую высоту таблицы для предотвращения мерцания
-    const prevHeight = tbody.offsetHeight;
-    // Используем DocumentFragment для минимизации перерисовок
-    const fragment = document.createDocumentFragment();
+    
     chrome.storage.local.get(["userConfig", "totalWatched"], (data) => {
         const config = data.userConfig;
         const blacklist = typeof config?.blacklist === "object" ? config.blacklist : {};
         const channels = Array.isArray(config?.channels) ? config.channels : [];
         const totalWatched = data.totalWatched || {};
+        
+        // Группируем каналы по dropId
+        const groups = {};
+        const ungrouped = [];
+        
         channels.forEach(ch => {
             const url = typeof ch === "string" ? ch : ch.url;
+            const dropId = (typeof ch === "object" && ch.dropId) ? ch.dropId : null;
+            
+            if (dropId) {
+                if (!groups[dropId]) {
+                    groups[dropId] = {
+                        dropId,
+                        watchTime: typeof ch === "object" ? ch.watchTime : null,
+                        channels: []
+                    };
+                }
+                groups[dropId].channels.push({ url, ch });
+            } else {
+                ungrouped.push({ url, ch });
+            }
+        });
+        
+        const fragment = document.createDocumentFragment();
+        
+        // Отрисовываем группы
+        Object.values(groups).forEach(group => {
+            const targetSec = group.watchTime ? parseTimeToSeconds(group.watchTime) : 0;
+            let groupTotalTime = 0;
+            let groupStatus = "Активен";
+            let hasAnyBlocked = false;
+            let allPermanent = true;
+            
+            // Вычисляем суммарное время группы и статус каждого канала
+            group.channels.forEach(item => {
+                groupTotalTime += (totalWatched[item.url] || 0);
+                if (blacklist[item.url]) {
+                    hasAnyBlocked = true;
+                    if (blacklist[item.url] !== "permanent") {
+                        allPermanent = false;
+                    }
+                }
+            });
+            
+            // Определяем статус группы на основе статуса каналов
+            const allChannelsBlocked = group.channels.every(item => blacklist[item.url]);
+            if (allChannelsBlocked) {
+                groupStatus = allPermanent ? "В ЧС навсегда" : "В ЧС";
+            } else if (hasAnyBlocked) {
+                groupStatus = "Частично заблокирована";
+            }
+            
+            // Заголовок группы
+            const headerTr = document.createElement("tr");
+            headerTr.className = "grouped-header";
+            const channelUrls = group.channels.map(item => item.url).join(' / ');
+            const btnText = allChannelsBlocked ? 'Разбл.' : 'В ЧС';
+            headerTr.innerHTML = `
+                <td><strong>${channelUrls}</strong></td>
+                <td><span class="group-badge">${group.dropId}</span></td>
+                <td><strong>${secondsToHMS(groupTotalTime)}</strong></td>
+                <td><strong>${secondsToHMS(targetSec)}</strong></td>
+                <td><strong>${groupStatus}</strong></td>
+                <td class="table-actions" rowspan="${group.channels.length}">
+                    <button type="button" class="btn btn-sm btn-accent edit-group-row-btn" data-dropid="${group.dropId}">Изм.</button>
+                    <button type="button" class="btn btn-sm btn-danger delete-group-row-btn" data-dropid="${group.dropId}">Удал.</button>
+                    <button type="button" class="btn btn-sm btn-warning reset-group-btn" data-dropid="${group.dropId}">Сбр.</button>
+                    <button type="button" class="btn btn-sm btn-primary blacklist-group-toggle-btn" data-dropid="${group.dropId}">${btnText}</button>
+                </td>
+                <td></td>
+                <td>
+                    <span class="watch-percent" data-dropid="${group.dropId}">--%</span>
+                </td>
+            `;
+            fragment.appendChild(headerTr);
+            
+            // Каналы в группе
+            group.channels.forEach((item, idx) => {
+                if (idx === 0) return; // Заголовок уже добавлен
+                const tr = document.createElement("tr");
+                tr.className = "grouped-item";
+                const channelTime = totalWatched[item.url] || 0;
+                const isChannelBlocked = !!blacklist[item.url];
+                const channelStatus = isChannelBlocked ? (blacklist[item.url] === "permanent" ? "В ЧС (∞)" : "В ЧС") : "Активен";
+                tr.innerHTML = `
+                    <td style="color:#666;font-size:12px;"><a href="${item.url}" target="_blank" class="channel-link">↳ ${item.url}</a></td>
+                    <td></td>
+                    <td>${secondsToHMS(channelTime)}</td>
+                    <td></td>
+                    <td style="font-size:12px;">${channelStatus}</td>
+                    <td style="padding:4px;text-align:center;">
+                        <button type="button" class="btn btn-sm btn-primary channel-blacklist-btn" data-url="${item.url}" style="padding:4px 6px;font-size:11px;flex:1;min-width:50px;">${isChannelBlocked ? 'Разбл.' : 'В ЧС'}</button>
+                    </td>
+                    <td></td>
+                    <td></td>
+                `;
+                fragment.appendChild(tr);
+            });
+        });
+        
+        // Отрисовываем негруппированные каналы
+        ungrouped.forEach(item => {
+            const url = item.url;
+            const ch = item.ch;
             const sec = stats && stats[url] ? stats[url] : 0;
-            // Получаем целевое время просмотра
             let targetSec = 0;
             if (typeof ch === "string") {
                 targetSec = config && config.watchTime ? parseTimeToSeconds(config.watchTime) : 0;
             } else {
                 targetSec = ch.watchTime ? parseTimeToSeconds(ch.watchTime) : (config && config.watchTime ? parseTimeToSeconds(config.watchTime) : 0);
             }
-            let statusText = "";
+            let statusText = "Активен";
             let untilText = "";
 
             if (blacklist[url] === "permanent") {
@@ -58,22 +480,20 @@ function updateStatsTable(stats) {
                 const msLeft = blacklist[url] - Date.now();
                 statusText = "В ЧС";
                 untilText = msLeft > 0 ? msToHMS(msLeft) : "0:00:00";
-            } else {
-                statusText = "Активен";
-                untilText = "";
             }
 
             const tr = document.createElement("tr");
             tr.innerHTML = `
-                <td><a href="${url}" target="_blank" rel="noopener noreferrer">${url}</a></td>
+                <td><a href="${url}" target="_blank" class="channel-link">${url}</a></td>
+                <td style="text-align:center;"><span style="color:#999;">—</span></td>
                 <td>${secondsToHMS(sec)}</td>
                 <td>${secondsToHMS(targetSec)}</td>
                 <td>${statusText}</td>
                 <td class="table-actions">
-                    <button type="button" class="btn btn-sm btn-accent edit-btn" data-url="${url}"><span class="icon">${svgEdit()}</span>Изменить</button>
-                    <button type="button" class="btn btn-sm btn-danger delete-btn" data-url="${url}"><span class="icon">${svgDelete()}</span>Удалить</button>
-                    <button type="button" class="btn btn-sm btn-warning reset-watch-btn" data-url="${url}"><span class="icon">${svgReset()}</span>Сброс</button>
-                    <button type="button" class="btn btn-sm btn-primary blacklist-toggle-btn" data-url="${url}">${blacklist[url] ? 'Разблокировать' : 'В ЧС'}</button>
+                    <button type="button" class="btn btn-sm btn-accent edit-btn" data-url="${url}">Изм.</button>
+                    <button type="button" class="btn btn-sm btn-danger delete-btn" data-url="${url}">Удал.</button>
+                    <button type="button" class="btn btn-sm btn-warning reset-watch-btn" data-url="${url}">Сбр.</button>
+                    <button type="button" class="btn btn-sm btn-primary blacklist-toggle-btn" data-url="${url}">${blacklist[url] ? 'Разбл.' : 'В ЧС'}</button>
                 </td>
                 <td>${untilText}</td>
                 <td>
@@ -82,16 +502,45 @@ function updateStatsTable(stats) {
             `;
             fragment.appendChild(tr);
         });
-        // Очищаем только после формирования нового содержимого
+        
+        // Обновляем таблицу
         tbody.innerHTML = "";
         tbody.appendChild(fragment);
-        // Восстанавливаем высоту, чтобы не было скачков
-        tbody.style.minHeight = prevHeight + "px";
-        setTimeout(() => { tbody.style.minHeight = ""; }, 100);
-
-    // Удалять обработчики через clone нельзя (могло вызывать двойные клики), поэтому мы перезаписываем контейнер tbody выше
-
-    // Делегированный обработчик кликов по таблице — один обработчик на tbody
+        
+        // Обработчики для групповых кнопок
+        attachGroupRowHandlers();
+        
+        // Обработчики для блокировки отдельных каналов в группе
+        document.querySelectorAll('.channel-blacklist-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const url = btn.getAttribute('data-url');
+                const isUnblock = btn.textContent.trim() === 'Разбл.';
+                
+                chrome.storage.local.get('userConfig', (data) => {
+                    const config = data.userConfig || { channels: [] };
+                    if (typeof config.blacklist !== 'object' || Array.isArray(config.blacklist)) config.blacklist = {};
+                    
+                    if (isUnblock) {
+                        delete config.blacklist[url];
+                    } else {
+                        const tempVal = config.tempBlacklistSeconds || (config.tempBlacklist || null);
+                        if (tempVal) {
+                            const seconds = parseTimeToSeconds(tempVal);
+                            const ts = Date.now() + seconds * 1000;
+                            config.blacklist[url] = ts;
+                        } else {
+                            config.blacklist[url] = 'permanent';
+                        }
+                    }
+                    
+                    chrome.storage.local.set({ userConfig: config }, () => {
+                        pollStats();
+                    });
+                });
+            });
+        });
+        
+        // Делегированный обработчик кликов по таблице — один обработчик на tbody
         const tbodyEl = document.querySelector('#statsTable tbody');
         if (tbodyEl && !tbodyEl._hasDelegate) {
             tbodyEl.addEventListener('click', function (ev) {
@@ -107,12 +556,24 @@ function updateStatsTable(stats) {
                         const ch = cfg.channels[idx];
                         const curUrl = typeof ch === 'string' ? ch : ch.url;
                         const curWatch = typeof ch === 'string' ? '' : (ch.watchTime || '');
+                        const curDropId = typeof ch === 'object' ? (ch.dropId || '') : '';
+                        
                         const newUrl = showPrompt('Изменить URL канала:', curUrl);
                         if (!newUrl) return;
                         const newWatch = showPrompt('Изменить время просмотра (H.MM.SS) или оставьте пустым для значения по умолчанию:', curWatch);
-                        const newEntry = newWatch ? { url: newUrl, watchTime: newWatch } : newUrl;
+                        const newDropId = showPrompt('Изменить ID группы дропа (или оставьте пустым):', curDropId);
+                        
+                        const newEntry = {
+                            url: newUrl,
+                            ...(newWatch && { watchTime: newWatch }),
+                            ...(newDropId && { dropId: newDropId })
+                        };
+                        
                         cfg.channels[idx] = newEntry;
-                        chrome.storage.local.set({ userConfig: cfg }, () => { pollStats(); });
+                        chrome.storage.local.set({ userConfig: cfg }, () => { 
+                            pollStats();
+                            renderGroupsView();
+                        });
                     });
                     return;
                 }
@@ -176,8 +637,29 @@ function updateStatsTable(stats) {
         // обновляем проценты асинхронно
         document.querySelectorAll('.watch-percent').forEach(el => {
             const url = el.getAttribute('data-url');
-            try {
-                chrome.runtime.sendMessage({ action: 'getWatchPercent', url }, (resp) => {
+            const dropId = el.getAttribute('data-dropid');
+            
+            if (url) {
+                // Для нгеруппированных каналов
+                try {
+                    chrome.runtime.sendMessage({ action: 'getWatchPercent', url }, (resp) => {
+                        if (chrome.runtime.lastError) {
+                            el.textContent = '--%';
+                            return;
+                        }
+                        if (resp && typeof resp.percent === 'number') {
+                            el.textContent = resp.percent + '%';
+                            el.title = `${secondsToHMS(resp.watched)} / ${secondsToHMS(resp.targetSec)}`;
+                        } else {
+                            el.textContent = '--%';
+                        }
+                    });
+                } catch (e) {
+                    el.textContent = '--%';
+                }
+            } else if (dropId) {
+                // Для групп
+                chrome.runtime.sendMessage({ action: 'getDropGroupPercent', dropId }, (resp) => {
                     if (chrome.runtime.lastError) {
                         el.textContent = '--%';
                         return;
@@ -189,8 +671,6 @@ function updateStatsTable(stats) {
                         el.textContent = '--%';
                     }
                 });
-            } catch (e) {
-                el.textContent = '--%';
             }
         });
     });
@@ -402,27 +882,90 @@ document.addEventListener("DOMContentLoaded", () => {
     // --- Добавление строки канала ---
     const newChannelUrlInput = document.getElementById('newChannelUrlInput');
     const newChannelWatchTimeInput = document.getElementById('newChannelWatchTimeInput');
+    const newChannelDropIdInput = document.getElementById('newChannelDropIdInput');
     const addChannelRowButton = document.getElementById('addChannelRowButton');
 
     if (addChannelRowButton) {
         addChannelRowButton.addEventListener('click', () => {
             const url = newChannelUrlInput ? newChannelUrlInput.value.trim() : '';
             const watchTime = newChannelWatchTimeInput ? newChannelWatchTimeInput.value.trim() : '';
+            const dropId = newChannelDropIdInput ? newChannelDropIdInput.value.trim() : '';
             if (!url) { showAlert('Введите URL канала'); return; }
             // простая валидация URL
             if (!/^https?:\/\/.+/.test(url)) { if (!/^www\./.test(url)) { showAlert('Введите корректный URL'); return; } }
             chrome.storage.local.get('userConfig', (data) => {
                 const cfg = data.userConfig || { channels: [] };
                 if (!Array.isArray(cfg.channels)) cfg.channels = [];
-                const entry = watchTime ? { url, watchTime } : url;
+                const entry = {
+                    url,
+                    ...(watchTime && { watchTime }),
+                    ...(dropId && { dropId })
+                };
                 cfg.channels.push(entry);
                 chrome.storage.local.set({ userConfig: cfg }, () => {
                     newChannelUrlInput.value = '';
                     newChannelWatchTimeInput.value = '';
+                    newChannelDropIdInput.value = '';
+                    pollStats();
+                    renderGroupsView();
+                });
+            });
+        });
+    }
+    
+    // Обработчики для секции групп
+    const toggleGroupsView = document.getElementById('toggleGroupsView');
+    const createNewGroup = document.getElementById('createNewGroup');
+    const groupsContainer = document.getElementById('groupsContainer');
+    
+    if (toggleGroupsView) {
+        toggleGroupsView.addEventListener('click', () => {
+            if (groupsContainer.style.display === 'none') {
+                groupsContainer.style.display = 'block';
+                renderGroupsView();
+            } else {
+                groupsContainer.style.display = 'none';
+            }
+        });
+    }
+    
+    if (createNewGroup) {
+        createNewGroup.addEventListener('click', () => {
+            const dropId = prompt('Введите ID новой группы дропа:');
+            if (!dropId) return;
+            
+            const watchTime = prompt('Введите целевое время просмотра (H.MM.SS):', '2.00.00');
+            if (!watchTime) return;
+            
+            const channelUrl = prompt('Введите URL первого канала группы:');
+            if (!channelUrl) return;
+            
+            chrome.storage.local.get('userConfig', (data) => {
+                const cfg = data.userConfig || { channels: [] };
+                if (!Array.isArray(cfg.channels)) cfg.channels = [];
+                
+                // Проверяем, что такой dropId ещё не существует
+                const exists = cfg.channels.some(ch => typeof ch === 'object' && ch.dropId === dropId);
+                if (exists) {
+                    alert(`Группа с ID "${dropId}" уже существует`);
+                    return;
+                }
+                
+                cfg.channels.push({
+                    url: channelUrl,
+                    watchTime,
+                    dropId
+                });
+                
+                chrome.storage.local.set({ userConfig: cfg }, () => {
+                    renderGroupsView();
                     pollStats();
                 });
             });
         });
     }
+    
+    // Инициализация отображения групп
+    renderGroupsView();
 
 });

@@ -84,6 +84,38 @@ function parseTimeToSeconds(val) {
     return 0;
 }
 
+// Получить dropId для URL канала
+function getDropId(url, config) {
+    if (!config || !Array.isArray(config.channels)) return null;
+    const channel = config.channels.find(ch => {
+        const chUrl = typeof ch === 'string' ? ch : ch.url;
+        return chUrl === url;
+    });
+    if (!channel || typeof channel === 'string') return null;
+    return channel.dropId || null;
+}
+
+// Получить все URL, принадлежащие той же группе дропа
+function getDropGroupUrls(dropId, config) {
+    if (!dropId || !config || !Array.isArray(config.channels)) return [];
+    return config.channels
+        .filter(ch => {
+            if (typeof ch === 'string') return false;
+            return ch.dropId === dropId;
+        })
+        .map(ch => ch.url);
+}
+
+// Получить суммарное время просмотра для группы дропа
+function getDropGroupWatchedTime(dropId, config, totalWatched) {
+    const urls = getDropGroupUrls(dropId, config);
+    let sum = 0;
+    for (const url of urls) {
+        sum += (totalWatched[url] || 0);
+    }
+    return sum;
+}
+
 function ensureStreamWindow(cb) {
     // Проверяем существующее окно; не создаём about:blank заранее — создаём окно с нужной вкладкой в setStreamTab
     if (streamWindowId !== null) {
@@ -187,7 +219,8 @@ function startWatching(config) {
                 : {
                     url: ch.url,
                     watchTime: parseTimeToSeconds(ch.watchTime || config.watchTime),
-                    waitBeforeCheck: ch.waitBeforeCheck !== undefined ? ch.waitBeforeCheck : config.waitBeforeCheck
+                    waitBeforeCheck: ch.waitBeforeCheck !== undefined ? ch.waitBeforeCheck : config.waitBeforeCheck,
+                    dropId: ch.dropId || null
                 }
         );
     searchUrlPart = config.searchUrlPart || "";
@@ -499,12 +532,16 @@ function doFindLink(tabId, url, watchTime, attempt, maxAttempts, onResult) {
         });
 }
 
-// Модифицированная функция addToBlacklist с поддержкой customDurationSeconds
+// Модифицированная функция addToBlacklist с поддержкой customDurationSeconds и групп дропов
 function addToBlacklist(url, customDurationSeconds) {
-    chrome.storage.local.get("userConfig", (data) => {
+    chrome.storage.local.get(["userConfig", "totalWatched"], (data) => {
         let config = data.userConfig;
         if (!config) return;
         if (typeof config.blacklist !== "object" || Array.isArray(config.blacklist)) config.blacklist = {};
+        
+        const dropId = getDropId(url, config);
+        const groupUrls = dropId ? getDropGroupUrls(dropId, config) : [url];
+        
         // Получаем watchTime для этого канала
         let channel = (config.channels || []).find(
             ch => (typeof ch === "string" ? ch : ch.url) === url
@@ -515,6 +552,10 @@ function addToBlacklist(url, customDurationSeconds) {
                 ? parseTimeToSeconds(config.watchTime)
                 : parseTimeToSeconds(channel.watchTime || config.watchTime);
         }
+        
+        // Если канал в группе — проверяем суммарное время просмотра группы
+        const totalGroupWatched = dropId ? getDropGroupWatchedTime(dropId, config, data.totalWatched || {}) : (totalWatched[url] || 0);
+        
         // Получаем общее время временного ЧС из конфига (часы.минуты,секунды)
         let tempBlacklistSeconds = 60;
         if (typeof config.tempBlacklistSeconds === "number") {
@@ -526,14 +567,21 @@ function addToBlacklist(url, customDurationSeconds) {
         if (typeof customDurationSeconds === "number" && customDurationSeconds > 0) {
             tempBlacklistSeconds = customDurationSeconds;
         }
-        // Если уже просмотрено достаточно — делаем permanent
-        if (totalWatched[url] && watchTime > 0 && totalWatched[url] >= watchTime) {
-            config.blacklist[url] = "permanent";
+        
+        // Если уже просмотрено достаточно — блокируем ВСЮ ГРУППУ как permanent
+        if (watchTime > 0 && totalGroupWatched >= watchTime) {
+            for (const groupUrl of groupUrls) {
+                config.blacklist[groupUrl] = "permanent";
+            }
             chrome.storage.local.set({ userConfig: config }, () => {
-                log(`Канал ${url} навсегда добавлен в черный список (достигнуто время просмотра).`);
+                if (dropId) {
+                    log(`Группа дропа '${dropId}' (${groupUrls.join(', ')}) навсегда добавлена в черный список (достигнуто время просмотра ${totalGroupWatched}/${watchTime}с).`);
+                } else {
+                    log(`Канал ${url} навсегда добавлен в черный список (достигнуто время просмотра).`);
+                }
             });
         } else {
-            // Ставим время разблокировки по customDurationSeconds или общей константе
+            // Ставим время разблокировки ТОЛЬКО ДЛЯ ЭТОГО КАНАЛА (не всей группы) — индивидуально
             const until = Date.now() + tempBlacklistSeconds * 1000;
             config.blacklist[url] = until;
             chrome.storage.local.set({ userConfig: config }, () => {
@@ -579,18 +627,24 @@ function autoRemoveFromBlacklistIfWatchedEnough(url, config) {
 function startWatchTimer(tabId, url, watchTime) {
     // Инвалидируем предыдущий запуск и увеличиваем runId для этой сессии просмотра
     const myRunId = ++currentRunId;
-    // вычисляем оставшиеся секунды с учётом уже просмотренного времени
-    const alreadyWatched = totalWatched[url] || 0;
-    let secondsLeft = Math.max(0, watchTime - alreadyWatched);
-    currentStreamInfo = { url, secondsLeft };
-    log(`DEBUG: startWatchTimer for ${url}, watchTime=${watchTime}, runId=${myRunId}`);
-    let timerStopped = false;
-    let linkCheckInterval = null;
-    let checkIntervalMs = 2 * 60 * 1000; // по умолчанию 2 минуты
-
-    // Получаем интервал из конфига
+    
     chrome.storage.local.get("userConfig", (data) => {
         let config = data.userConfig;
+        const dropId = getDropId(url, config);
+        
+        // Вычисляем оставшиеся секунды с учётом уже просмотренного времени
+        // Если канал в группе — используем суммарное время группы
+        const alreadyWatched = dropId 
+            ? getDropGroupWatchedTime(dropId, config, totalWatched)
+            : (totalWatched[url] || 0);
+        
+        let secondsLeft = Math.max(0, watchTime - alreadyWatched);
+        currentStreamInfo = { url, secondsLeft };
+        log(`DEBUG: startWatchTimer for ${url}${dropId ? ` (group: ${dropId})` : ''}, watchTime=${watchTime}, alreadyWatched=${alreadyWatched}, runId=${myRunId}`);
+        let timerStopped = false;
+        let linkCheckInterval = null;
+        let checkIntervalMs = 2 * 60 * 1000; // по умолчанию 2 минуты
+
         if (config && typeof config.checkIntervalMinutes === "number" && config.checkIntervalMinutes > 0) {
             checkIntervalMs = config.checkIntervalMinutes * 60 * 1000;
         }
@@ -665,17 +719,36 @@ function startWatchTimer(tabId, url, watchTime) {
                         currentStreamInfo = { url, secondsLeft };
                         if (!totalWatched[url]) totalWatched[url] = 0;
                         totalWatched[url]++;
+                        
+                        // Вычисляем суммарное время группы (если канал в группе)
+                        const currentGroupWatched = dropId 
+                            ? getDropGroupWatchedTime(dropId, config, totalWatched)
+                            : totalWatched[url];
+                        
                         // диагностический лог для каждого увеличения
-                        log(`DEBUG: incremented watched for ${url} -> ${totalWatched[url]}s (secondsLeft=${secondsLeft}) runId=${myRunId}`);
+                        log(`DEBUG: incremented watched for ${url}${dropId ? ` (group ${dropId}: ${currentGroupWatched}s)` : ''} -> ${totalWatched[url]}s (secondsLeft=${secondsLeft}) runId=${myRunId}`);
+                        
                         // Сохраняем totalWatched немедленно
                         chrome.storage.local.set({ totalWatched }, () => {
-                            // После сохранения проверяем, достигли ли мы установленного времени просмотра, и помечаем как постоянный
-                            if (watchTime > 0 && totalWatched[url] >= watchTime) {
+                            // После сохранения проверяем, достигли ли мы установленного времени просмотра для группы
+                            if (watchTime > 0 && currentGroupWatched >= watchTime) {
                                 if (config && typeof config.blacklist === 'object') {
-                                    if (config.blacklist[url] !== 'permanent') {
-                                        config.blacklist[url] = 'permanent';
+                                    // Блокируем все каналы группы как permanent
+                                    const groupUrls = dropId ? getDropGroupUrls(dropId, config) : [url];
+                                    let needUpdate = false;
+                                    for (const groupUrl of groupUrls) {
+                                        if (config.blacklist[groupUrl] !== 'permanent') {
+                                            config.blacklist[groupUrl] = 'permanent';
+                                            needUpdate = true;
+                                        }
+                                    }
+                                    if (needUpdate) {
                                         chrome.storage.local.set({ userConfig: config }, () => {
-                                            log(`Канал ${url} навсегда добавлен в черный список (достигнуто время просмотра).`);
+                                            if (dropId) {
+                                                log(`Группа дропа '${dropId}' (${groupUrls.join(', ')}) навсегда добавлена в черный список (достигнуто время просмотра ${currentGroupWatched}/${watchTime}с).`);
+                                            } else {
+                                                log(`Канал ${url} навсегда добавлен в черный список (достигнуто время просмотра).`);
+                                            }
                                             if (watchTimerInterval) { clearInterval(watchTimerInterval); watchTimerInterval = null; }
                                             if (watchLinkCheckInterval) { clearInterval(watchLinkCheckInterval); watchLinkCheckInterval = null; }
                                             timerStopped = true;
@@ -703,14 +776,30 @@ function startWatchTimer(tabId, url, watchTime) {
                         currentStreamInfo = { url, secondsLeft };
                         if (!totalWatched[url]) totalWatched[url] = 0;
                         totalWatched[url]++;
-                        log(`DEBUG: incremented watched for ${url} -> ${totalWatched[url]}s (secondsLeft=${secondsLeft}) runId=${myRunId} (fallback)`);
+                        
+                        const currentGroupWatched = dropId 
+                            ? getDropGroupWatchedTime(dropId, config, totalWatched)
+                            : totalWatched[url];
+                        
+                        log(`DEBUG: incremented watched for ${url}${dropId ? ` (group ${dropId}: ${currentGroupWatched}s)` : ''} -> ${totalWatched[url]}s (secondsLeft=${secondsLeft}) runId=${myRunId} (fallback)`);
                         chrome.storage.local.set({ totalWatched }, () => {
-                            if (watchTime > 0 && totalWatched[url] >= watchTime) {
+                            if (watchTime > 0 && currentGroupWatched >= watchTime) {
                                 if (config && typeof config.blacklist === 'object') {
-                                    if (config.blacklist[url] !== 'permanent') {
-                                        config.blacklist[url] = 'permanent';
+                                    const groupUrls = dropId ? getDropGroupUrls(dropId, config) : [url];
+                                    let needUpdate = false;
+                                    for (const groupUrl of groupUrls) {
+                                        if (config.blacklist[groupUrl] !== 'permanent') {
+                                            config.blacklist[groupUrl] = 'permanent';
+                                            needUpdate = true;
+                                        }
+                                    }
+                                    if (needUpdate) {
                                         chrome.storage.local.set({ userConfig: config }, () => {
-                                            log(`Канал ${url} навсегда добавлен в черный список (достигнуто время просмотра).`);
+                                            if (dropId) {
+                                                log(`Группа дропа '${dropId}' (${groupUrls.join(', ')}) навсегда добавлена в черный список (достигнуто время просмотра ${currentGroupWatched}/${watchTime}с).`);
+                                            } else {
+                                                log(`Канал ${url} навсегда добавлен в черный список (достигнуто время просмотра).`);
+                                            }
                                             if (watchTimerInterval) { clearInterval(watchTimerInterval); watchTimerInterval = null; }
                                             if (watchLinkCheckInterval) { clearInterval(watchLinkCheckInterval); watchLinkCheckInterval = null; }
                                             timerStopped = true;
@@ -739,14 +828,30 @@ function startWatchTimer(tabId, url, watchTime) {
                 currentStreamInfo = { url, secondsLeft };
                 if (!totalWatched[url]) totalWatched[url] = 0;
                 totalWatched[url]++;
-                log(`DEBUG: incremented watched for ${url} -> ${totalWatched[url]}s (secondsLeft=${secondsLeft}) runId=${myRunId} (sync-fallback)`);
+                
+                const currentGroupWatched = dropId 
+                    ? getDropGroupWatchedTime(dropId, config, totalWatched)
+                    : totalWatched[url];
+                
+                log(`DEBUG: incremented watched for ${url}${dropId ? ` (group ${dropId}: ${currentGroupWatched}s)` : ''} -> ${totalWatched[url]}s (secondsLeft=${secondsLeft}) runId=${myRunId} (sync-fallback)`);
                 chrome.storage.local.set({ totalWatched }, () => {
-                    if (watchTime > 0 && totalWatched[url] >= watchTime) {
+                    if (watchTime > 0 && currentGroupWatched >= watchTime) {
                         if (config && typeof config.blacklist === 'object') {
-                            if (config.blacklist[url] !== 'permanent') {
-                                config.blacklist[url] = 'permanent';
+                            const groupUrls = dropId ? getDropGroupUrls(dropId, config) : [url];
+                            let needUpdate = false;
+                            for (const groupUrl of groupUrls) {
+                                if (config.blacklist[groupUrl] !== 'permanent') {
+                                    config.blacklist[groupUrl] = 'permanent';
+                                    needUpdate = true;
+                                }
+                            }
+                            if (needUpdate) {
                                 chrome.storage.local.set({ userConfig: config }, () => {
-                                    log(`Канал ${url} навсегда добавлен в черный список (достигнуто время просмотра).`);
+                                    if (dropId) {
+                                        log(`Группа дропа '${dropId}' (${groupUrls.join(', ')}) навсегда добавлена в черный список (достигнуто время просмотра ${currentGroupWatched}/${watchTime}с).`);
+                                    } else {
+                                        log(`Канал ${url} навсегда добавлен в черный список (достигнуто время просмотра).`);
+                                    }
                                     if (watchTimerInterval) { clearInterval(watchTimerInterval); watchTimerInterval = null; }
                                     if (watchLinkCheckInterval) { clearInterval(watchLinkCheckInterval); watchLinkCheckInterval = null; }
                                     timerStopped = true;
@@ -1061,6 +1166,35 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                 }, (waitSec || defaultWaitBeforeCheck) * 1000);
                 sendResponse({ ok: true, url: sel.url });
             });
+        });
+        return true;
+    }
+    if (request.action === "getDropGroupPercent" && request.dropId) {
+        chrome.storage.local.get(["userConfig", "totalWatched"], (data) => {
+            const config = data.userConfig || {};
+            const totalWatched = data.totalWatched || {};
+            const dropId = request.dropId;
+            
+            // Находим все каналы этой группы
+            const channels = Array.isArray(config.channels) ? config.channels : [];
+            const groupChannels = channels.filter(ch => typeof ch === 'object' && ch.dropId === dropId);
+            
+            if (groupChannels.length === 0) {
+                sendResponse({ percent: 0, watched: 0, targetSec: 0 });
+                return;
+            }
+            
+            // Вычисляем целевое время (берём с первого канала группы)
+            let targetSec = groupChannels[0].watchTime ? parseTimeToSeconds(groupChannels[0].watchTime) : (config.watchTime ? parseTimeToSeconds(config.watchTime) : defaultWatchTime);
+            
+            // Суммируем время для всех каналов группы
+            let groupWatched = 0;
+            groupChannels.forEach(ch => {
+                groupWatched += (totalWatched[ch.url] || 0);
+            });
+            
+            const percent = targetSec > 0 ? Math.min(100, Math.round((groupWatched / targetSec) * 100)) : 0;
+            sendResponse({ percent, watched: groupWatched, targetSec });
         });
         return true;
     }

@@ -64,22 +64,46 @@ body{
 #startButton{width:90%;max-width:92%;display:inline-flex;justify-content:center}
 
 /* Страница статистики */
-.container{max-width:900px;margin:16px auto}
-.card{background:var(--surface);padding:12px;border-radius:var(--radius);box-shadow:0 1px 2px rgba(16,24,40,0.03);border:1px solid #eef2f7}
+.container{max-width:1000px;margin:16px auto}
+.card{background:var(--surface);padding:12px;border-radius:var(--radius);box-shadow:0 2px 4px rgba(16,24,40,0.08);border:1px solid #eef2f7;transition:box-shadow 0.2s}
+.card:hover{box-shadow:0 4px 12px rgba(16,24,40,0.12)}
 #log{font-size:13px;height:120px;overflow:auto;background:#fbfbfd;border-radius:6px;padding:8px;border:1px solid #e6e6e6}
-table{width:100%;font-size:13px;border-collapse:collapse;margin-top:10px}
-th,td{border:1px solid #e8eef8;padding:8px;text-align:left}
-th{background:#eef2ff;color:#0f172a}
-input[type=text], input[type=number], select{padding:6px 8px;border-radius:6px;border:1px solid #dfe6f3}
+table{width:100%;font-size:13px;border-collapse:collapse;margin-top:10px;background:#fff}
+thead{position:sticky;top:0;z-index:10}
+tr:hover{background:rgba(33,150,243,0.02)}
+tr.grouped-header{background:#f5f8ff;font-weight:600;border-top:2px solid #4a9eff;border-bottom:1px solid #d0e3f7}
+tr.grouped-item td{padding:6px 8px;background:#fafbfc;border-color:#f0f3f9}
+tr.grouped-item:last-child{border-bottom:2px solid #4a9eff}
+th,td{border:1px solid #e8eef8;padding:10px 8px;text-align:left;vertical-align:middle}
+th{background:#eef2ff;color:#0f172a;font-weight:600;border-bottom:2px solid #d0e3f7}
+td{color:#374151}
+tr:hover td{background:rgba(33,150,243,0.03)}
+/* вложенная таблица внутри групповой строки */
+.inner-table{width:100%;border-collapse:collapse;font-size:13px;margin:0}
+.inner-table th,.inner-table td{border:1px solid #e8eef8;padding:6px 8px;text-align:left;vertical-align:middle;background:#fff}
+.inner-table tr:nth-child(odd) td{background:#f8fbff}
+.inner-table .table-actions{justify-content:flex-start}
+input[type=text], input[type=number], select{padding:6px 8px;border-radius:6px;border:1px solid #dfe6f3;background:#fff;font-size:13px}
+input[type=text]:focus, input[type=number]:focus, select:focus{border-color:#4a9eff;box-shadow:0 0 0 3px rgba(74,158,255,0.1);outline:none}
 label{font-size:13px;color:#374151}
 
 /* Одинаковая ширина для кнопок действий в таблице, чтобы держать аккуратный вид */
-.table-actions{ /* Центрируем содержимое ячейки и делаем кнопки вертикальным стеком */
-  text-align:center;vertical-align:middle;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;padding:6px
+.table-actions{ /* Центрируем содержимое ячейки и делаем кнопки горизонтальным рядом */
+  text-align:center;vertical-align:middle;display:flex;flex-direction:row;align-items:center;justify-content:center;gap:4px;padding:6px;flex-wrap:wrap
 }
-.table-actions .btn{ /* Кнопки занимают 80% ширины ячейки, ограничиваем поведение текста */
-  width:80%;min-width:0;max-width:100%;box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding-left:8px;padding-right:8px
+.table-actions .btn{ /* Кнопки занимают 48% ширины ячейки, ограничиваем поведение текста */
+  flex:0 0 calc(50% - 2px);min-width:60px;max-width:100%;box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding:6px 8px;font-size:12px
 }
+
+/* Узкая колонка для Группы */
+th:nth-child(2), td:nth-child(2) {
+  width:65px;max-width:65px;padding:8px 4px;text-align:center;font-weight:600
+}
+
+/* Улучшенные стили для текста группы */
+.group-badge {background:#e3f2fd;color:#4a9eff;padding:2px 6px;border-radius:3px;font-weight:600;font-size:12px;display:inline-block}
+.channel-link {color:#4a9eff;text-decoration:none;font-weight:500;border-bottom:1px solid transparent;transition:border-color 0.2s}
+.channel-link:hover{border-bottom-color:#4a9eff}
 
 /* Небольшие вспомогательные стили */
 .muted{color:var(--muted)}

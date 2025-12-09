@@ -22,24 +22,22 @@
     <table id="statsTable" class="card">
         <thead>
             <tr>
-                <th>Канал</th>
-                <th>Время (ч:м:с)</th>
+                <th>Каналы и действия</th>
+                <th>Группа</th>
+                <th>Общее время группы</th>
                 <th>Целевое время</th>
                 <th>Статус</th>
-                <th>Действие</th>
-                <th>До разблокировки</th>
-                <th>Сбросить время</th>
+                <th>Прогресс</th>
             </tr>
         </thead>
         <tbody></tbody>
         <tfoot>
             <tr>
                 <td><input id="newChannelUrlInput" type="text" placeholder="https://www.twitch.tv/..." style="width:100%;"></td>
-                <td>--</td>
+                <td><input id="newChannelDropIdInput" type="text" placeholder="drop_1" style="width:65px;"></td>
                 <td><input id="newChannelWatchTimeInput" type="text" placeholder="H.MM.SS" style="width:100px;"></td>
                 <td></td>
                 <td><button id="addChannelRowButton" class="btn btn-accent">Добавить</button></td>
-                <td></td>
                 <td></td>
             </tr>
         </tfoot>
