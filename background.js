@@ -455,7 +455,20 @@ function doFindLink(tabId, url, watchTime, attempt, maxAttempts, onResult) {
                 return;
             }
 
-            log(`DEBUG: doFindLink check -> found=${response.found} pageMatches=${pageMatches} expected=${JSON.stringify(debugExpected)} actual=${JSON.stringify(debugActual)}`);
+            log(`DEBUG: doFindLink check -> found=${response.found} streamerOnline=${response.streamerOnline} pageMatches=${pageMatches} expected=${JSON.stringify(debugExpected)} actual=${JSON.stringify(debugActual)}`);
+
+            // Проверяем статус онлайна ПЕРВЫМ
+            if (response && response.streamerOnline === false) {
+                log(`ОШИБКА: Стример ОФЛАЙН на ${url}! Проверка не может продолжиться.`);
+                if (attempt >= maxAttempts && userPrevTabId && userPrevTabId !== tabId) {
+                    switchToTab(userPrevTabId);
+                }
+                if (attempt >= maxAttempts) {
+                    addToBlacklist(url);
+                }
+                nextChannel();
+                return;
+            }
 
             if (response && response.found && pageMatches) {
                 log(`Ссылка найдена на ${url}. Остаемся на странице ${watchTime} сек.`);
@@ -776,8 +789,28 @@ function startWatchTimer(tabId, url, watchTime) {
                 doFindLink(tabId, url, watchTime, 1, 1, (response) => {
                     // now response is augmented with pageMatches/debugExpected/debugActual when available
                     log(`DEBUG: periodic doFindLink -> ${response ? JSON.stringify(response) : 'undefined'}`);
-                    if (!response || !response.found || response.pageMatches === false) {
-                        log(`Ссылка '${searchUrlPart}' пропала или мы на другом стриме (${response && !response.pageMatches ? 'mismatch' : 'not found'}). Досрочно завершаем просмотр ${url}.`);
+                    
+                    // КРИТИЧНО: проверяем статус онлайна стримера
+                    const isOnline = response && response.streamerOnline !== false;
+                    const linkFound = response && response.found;
+                    const pageMatchesOk = response && response.pageMatches !== false;
+                    
+                    if (!isOnline) {
+                        log(`ОШИБКА: Стример ОФЛАЙН! Досрочно завершаем просмотр ${url}.`);
+                        if (watchTimerInterval) { clearInterval(watchTimerInterval); watchTimerInterval = null; }
+                        if (watchLinkCheckInterval) { clearInterval(watchLinkCheckInterval); watchLinkCheckInterval = null; }
+                        timerStopped = true;
+                        currentStreamInfo = { url: null, secondsLeft: 0 };
+                        // Добавляем канал в ЧС на время просмотра (стример был офлайн)
+                        addToBlacklist(url, watchTime);
+                        // невалидируем любые другие таймеры перед переходом к следующему, чтобы избежать гонок
+                        currentRunId++;
+                        nextChannel();
+                        return;
+                    }
+                    
+                    if (!linkFound || !pageMatchesOk) {
+                        log(`Ссылка '${searchUrlPart}' пропала или мы на другом стриме (${!pageMatchesOk ? 'mismatch' : 'not found'}). Досрочно завершаем просмотр ${url}.`);
                         if (watchTimerInterval) { clearInterval(watchTimerInterval); watchTimerInterval = null; }
                         if (watchLinkCheckInterval) { clearInterval(watchLinkCheckInterval); watchLinkCheckInterval = null; }
                         timerStopped = true;
@@ -847,6 +880,22 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     }
     if (request.action === "saveSearch") {
         chrome.storage.local.set({ lastSearch: request.text });
+    }
+    // Приём диагностических отчётов из content scripts
+    if (request.action === 'diagnosticReport' && request.report) {
+        try {
+            const rpt = request.report;
+            // Сохраняем в storage diagnostics (ограничим до 50 записей)
+            chrome.storage.local.get('diagnostics', (data) => {
+                const arr = Array.isArray(data.diagnostics) ? data.diagnostics : [];
+                arr.push(rpt);
+                while (arr.length > 50) arr.shift();
+                chrome.storage.local.set({ diagnostics: arr });
+            });
+            log(`DIAG: ${rpt.pageHost} ${rpt.pageUrl} online=${rpt.streamerOnline} hasVideo=${rpt.hasVideo} liveBadge=${rpt.liveBadge}`);
+        } catch (e) {
+            log('Ошибка при обработке diagnosticReport: ' + String(e));
+        }
     }
     if (request.action === "getStats") {
         sendResponse({ stats: totalWatched });
