@@ -1,8 +1,15 @@
 {
   "searchUrlPart": "https://www.twitch.tv/directory/category/rust",
   "checkIntervalMinutes": 1,
-
- "channels": [
+    "channels": [
+    {
+      "url": "https://www.twitch.tv/TwitchRivals",
+      "watchTime": "1.00.30"
+    },
+    {
+      "url": "https://www.twitch.tv/TwitchRivals",
+      "watchTime": "2.00.30"
+    },
     {
       "url": "https://www.twitch.tv/Welyn",
       "watchTime": "2.00.30"
@@ -44,7 +51,7 @@
       "watchTime": "2.00.30"
     }
   ],
-
+  
   "waitBeforeCheck": 20,
   "maxAttempts": 5,
   "tempBlacklistSeconds": "0.00.30"

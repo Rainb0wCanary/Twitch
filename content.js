@@ -34,49 +34,65 @@ function isStreamerOnline() {
             return false;
         }
 
-        // Универсальная логика (включая Twitch)
-        const onlineTokens = ['в эфире', 'в прямом эфире', 'live now', 'live', 'on air', 'прямой эфир', 'онлайн'];
-        for (let t of onlineTokens) {
-            if (t && bodyText.indexOf(t) !== -1) return true;
-        }
-
-        // Проверка aria-label и title-атрибутов на наличие 'live' / 'в эфире'
-        const nodesWithLabels = document.querySelectorAll('[aria-label],[title]');
-        for (let i = 0; i < nodesWithLabels.length; i++) {
-            try {
-                const el = nodesWithLabels[i];
-                const lab = (el.getAttribute('aria-label') || el.getAttribute('title') || '').toLowerCase();
-                if (lab.indexOf('live') !== -1 || lab.indexOf('в эфире') !== -1 || lab.indexOf('онлайн') !== -1) return true;
-            } catch (e) { /* ignore */ }
-        }
-
-        // Проверяем наличие тега <video> с реальным источником — обычно означает активный плеер
+        // Для Twitch: КРИТИЧНО — проверяем наличие видеоплеера с реальным источником ПЕРВЫМ
+        // Если видео есть и работает — почти наверняка стример онлайн (работает плеер)
         const videoElement = document.querySelector('video');
         if (videoElement) {
             const src = (videoElement.currentSrc || videoElement.src || '').trim();
-            if (src) return true;
-            const sources = videoElement.querySelectorAll('source');
-            if (sources && sources.length > 0) return true;
+            if (src && src.length > 0) {
+                // Есть реальный источник в плеере — стример ОНЛАЙН
+                return true;
+            }
         }
 
-        // Явные текстовые индикаторы ОФЛАЙН
-        const offlineTokens = ['канал оффлайн', 'channel offline', 'offline', 'не в сети'];
-        for (let t of offlineTokens) {
-            if (t && bodyText.indexOf(t) !== -1) return false;
+        // Проверяем явные ОФЛАЙН индикаторы в шапке канала (главная зона, не сайдбар)
+        // Ищем элементы с текстом 'Не в сети' или 'offline' в основном контенте (верх страницы)
+        const headerArea = document.querySelector('[data-a-target="channel-header-subscribe-button"]') || 
+                          document.querySelector('[data-a-target="channel-header"]') ||
+                          document.querySelector('[role="main"]') ||
+                          document.querySelector('main') ||
+                          document.querySelector('[data-test-id="layout-main-content"]');
+        
+        if (headerArea) {
+            const headerText = (headerArea.innerText || '').toLowerCase();
+            if (headerText.indexOf('не в сети') !== -1 || headerText.indexOf('offline') !== -1) {
+                return false; // Стример офлайн
+            }
         }
 
-        // Иногда офлайн представлен в <strong> или внутри блока с классом containing 'channel-status-info--offline'
-        const maybeOffline = Array.from(document.querySelectorAll('strong,div,span')).find(el => {
+        // Если нет видео и нет явного офлайн-текста в заголовке, но видим 'не в сети' в боковом меню/нижней части
+        // это НЕ показатель офлайна стримера (может быть меню категорий)
+        // Игнорируем общий bodyText, fokusируемся на элементах рядом с видеоплеером или в шапке
+
+        // Попробуем найти индикатор 'В ЭФИРЕ' рядом с видеоплеером (если плеер есть, но нет src)
+        if (videoElement) {
+            const playerContainer = videoElement.closest('[data-a-target="player"]') || 
+                                   videoElement.closest('[class*="player"]') ||
+                                   videoElement.closest('div');
+            if (playerContainer) {
+                const playerText = (playerContainer.innerText || '').toLowerCase();
+                if (playerText.indexOf('в эфире') !== -1 || playerText.indexOf('live') !== -1) {
+                    return true;
+                }
+            }
+        }
+
+        // Проверка aria-label статуса в шапке (может быть 'Live', 'Online' и т.д.)
+        const nodesWithLabels = document.querySelectorAll('[data-a-target*="status"],[data-a-target*="live"],[aria-label*="live"],[aria-label*="online"]');
+        for (let i = 0; i < nodesWithLabels.length; i++) {
             try {
-                const txt = (el.textContent || '').trim().toLowerCase();
-                if (!txt) return false;
-                if (txt.indexOf('не в сети') !== -1 || txt.indexOf('offline') !== -1) return true;
-                // динамические классы: ищем фрагмент имени класса канала-офлайн
-                if (el.className && typeof el.className === 'string' && el.className.indexOf('channel-status-info--offline') !== -1) return true;
-                return false;
-            } catch (e) { return false; }
-        });
-        if (maybeOffline) return false;
+                const el = nodesWithLabels[i];
+                const lab = (el.getAttribute('aria-label') || el.getAttribute('data-a-target') || el.textContent || '').toLowerCase();
+                if (lab.indexOf('live') !== -1 || lab.indexOf('в эфире') !== -1) return true;
+                if (lab.indexOf('offline') !== -1 || lab.indexOf('не в сети') !== -1) return false;
+            } catch (e) { /* ignore */ }
+        }
+
+        // КРИТИЧНО: если видим видеоплеер БЕЗ источника и нет явного 'В ЭФИРЕ' — считаем ОФФЛАЙН
+        // (Twitch добавляет пустой <video> на офлайн-страницы, чтобы зарезервировать место)
+        if (videoElement && !videoElement.currentSrc && !videoElement.src) {
+            return false; // Пустой видеоплеер = оффлайн
+        }
 
         // По умолчанию считаем онлайн (оптимистично), чтобы не пропускать работающие стримы
         return true;
