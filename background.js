@@ -84,6 +84,45 @@ function parseTimeToSeconds(val) {
     return 0;
 }
 
+function resolveTempBlacklistSeconds(config, customDurationSeconds) {
+    if (typeof customDurationSeconds === 'number' && customDurationSeconds > 0) return customDurationSeconds;
+    let tempSeconds = 60;
+    if (config && typeof config.tempBlacklistSeconds === 'number') {
+        tempSeconds = config.tempBlacklistSeconds;
+    } else if (config && typeof config.tempBlacklistSeconds === 'string') {
+        tempSeconds = parseTimeToSeconds(config.tempBlacklistSeconds);
+    }
+    return tempSeconds > 0 ? tempSeconds : 60;
+}
+
+// Применить порядок групп к списку каналов
+function applyGroupOrder(items, groupOrder) {
+    if (!Array.isArray(items)) return [];
+    if (!Array.isArray(groupOrder) || groupOrder.length === 0) return items;
+    const byGroup = {};
+    const noGroup = [];
+    items.forEach(ch => {
+        if (ch.dropId) {
+            if (!byGroup[ch.dropId]) byGroup[ch.dropId] = [];
+            byGroup[ch.dropId].push(ch);
+        } else {
+            noGroup.push(ch);
+        }
+    });
+    const ordered = [];
+    groupOrder.forEach(id => {
+        if (byGroup[id]) {
+            ordered.push(...byGroup[id]);
+            delete byGroup[id];
+        }
+    });
+    // добавляем группы, которых не было в порядке
+    Object.values(byGroup).forEach(arr => ordered.push(...arr));
+    // добавляем негрупповые в конце
+    ordered.push(...noGroup);
+    return ordered;
+}
+
 // Получить dropId для URL канала
 function getDropId(url, config) {
     if (!config || !Array.isArray(config.channels)) return null;
@@ -212,7 +251,7 @@ function startWatching(config) {
         return;
     }
     // channels теперь НЕ фильтруем по blacklist, чтобы всегда иметь полный список для динамической проверки
-    channels = config.channels
+    const mappedChannels = config.channels
         .map(ch =>
             typeof ch === "string"
                 ? { url: ch, watchTime: parseTimeToSeconds(config.watchTime), waitBeforeCheck: config.waitBeforeCheck }
@@ -223,6 +262,8 @@ function startWatching(config) {
                     dropId: ch.dropId || null
                 }
         );
+    const order = Array.isArray(config.groupOrder) ? config.groupOrder : [];
+    channels = applyGroupOrder(mappedChannels, order);
     searchUrlPart = config.searchUrlPart || "";
     defaultWatchTime = parseTimeToSeconds(config.watchTime) || 30;
     defaultWaitBeforeCheck = config.waitBeforeCheck || 5;
@@ -493,12 +534,15 @@ function doFindLink(tabId, url, watchTime, attempt, maxAttempts, onResult) {
             // Проверяем статус онлайна ПЕРВЫМ
             if (response && response.streamerOnline === false) {
                 log(`ОШИБКА: Стример ОФЛАЙН на ${url}! Проверка не может продолжиться.`);
-                if (attempt >= maxAttempts && userPrevTabId && userPrevTabId !== tabId) {
+                if (attempt < maxAttempts) {
+                    log(`Повторная попытка проверки офлайн-канала... (попытка ${attempt + 1})`);
+                    checkChannel(tabId, url, watchTime, attempt + 1, maxAttempts);
+                    return;
+                }
+                if (userPrevTabId && userPrevTabId !== tabId) {
                     switchToTab(userPrevTabId);
                 }
-                if (attempt >= maxAttempts) {
-                    addToBlacklist(url);
-                }
+                addToBlacklist(url);
                 nextChannel();
                 return;
             }
@@ -556,17 +600,7 @@ function addToBlacklist(url, customDurationSeconds) {
         // Если канал в группе — проверяем суммарное время просмотра группы
         const totalGroupWatched = dropId ? getDropGroupWatchedTime(dropId, config, data.totalWatched || {}) : (totalWatched[url] || 0);
         
-        // Получаем общее время временного ЧС из конфига (часы.минуты,секунды)
-        let tempBlacklistSeconds = 60;
-        if (typeof config.tempBlacklistSeconds === "number") {
-            tempBlacklistSeconds = config.tempBlacklistSeconds;
-        } else if (typeof config.tempBlacklistSeconds === "string") {
-            tempBlacklistSeconds = parseTimeToSeconds(config.tempBlacklistSeconds);
-        }
-        // Если передан customDurationSeconds — используем его
-        if (typeof customDurationSeconds === "number" && customDurationSeconds > 0) {
-            tempBlacklistSeconds = customDurationSeconds;
-        }
+        const tempBlacklistSeconds = resolveTempBlacklistSeconds(config, customDurationSeconds);
         
         // Если уже просмотрено достаточно — блокируем ВСЮ ГРУППУ как permanent
         if (watchTime > 0 && totalGroupWatched >= watchTime) {
@@ -900,6 +934,8 @@ function startWatchTimer(tabId, url, watchTime) {
                     const linkFound = response && response.found;
                     const pageMatchesOk = response && response.pageMatches !== false;
                     
+                    const tempSeconds = resolveTempBlacklistSeconds(config);
+
                     if (!isOnline) {
                         log(`ОШИБКА: Стример ОФЛАЙН! Досрочно завершаем просмотр ${url}.`);
                         if (watchTimerInterval) { clearInterval(watchTimerInterval); watchTimerInterval = null; }
@@ -907,7 +943,7 @@ function startWatchTimer(tabId, url, watchTime) {
                         timerStopped = true;
                         currentStreamInfo = { url: null, secondsLeft: 0 };
                         // Добавляем канал в ЧС на время просмотра (стример был офлайн)
-                        addToBlacklist(url, watchTime);
+                        addToBlacklist(url, tempSeconds);
                         // невалидируем любые другие таймеры перед переходом к следующему, чтобы избежать гонок
                         currentRunId++;
                         nextChannel();
@@ -921,7 +957,7 @@ function startWatchTimer(tabId, url, watchTime) {
                         timerStopped = true;
                         currentStreamInfo = { url: null, secondsLeft: 0 };
                         // Добавляем канал в ЧС на время просмотра
-                        addToBlacklist(url, watchTime);
+                        addToBlacklist(url, tempSeconds);
                         // невалидируем любые другие таймеры перед переходом к следующему, чтобы избежать гонок
                         currentRunId++;
                         nextChannel();

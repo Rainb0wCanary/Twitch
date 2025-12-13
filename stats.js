@@ -239,6 +239,69 @@ function msToHMS(ms) {
     return `${h}:${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}`;
 }
 
+function statusClassFor(statusText) {
+    if (statusText === "Активен") return "status-active";
+    if (statusText === "Частично") return "status-partial";
+    if (statusText === "В ЧС" || statusText === "В ЧС навсегда") return "status-blacklist";
+    return "";
+}
+
+// Обработчики для drag-and-drop переупорядочивания групп
+// Обработчики для кнопок перемещения групп
+function attachMoveGroupHandlers(tbody) {
+    const groupRows = Array.from(tbody.querySelectorAll('tr[data-group-row-start]'));
+    const groupIds = groupRows.map(r => r.dataset.groupId);
+    
+    const move = (rowId, direction) => {
+        const idx = groupIds.indexOf(rowId);
+        if (idx === -1) return;
+        const swapWith = direction === 'up' ? idx - 1 : idx + 1;
+        if (swapWith < 0 || swapWith >= groupIds.length) return;
+        [groupIds[idx], groupIds[swapWith]] = [groupIds[swapWith], groupIds[idx]];
+        saveGroupOrderArray(groupIds);
+        pollStats();
+    };
+    
+    groupRows.forEach((row) => {
+        const moveUpBtn = row.querySelector('.move-group-up-btn');
+        const moveDownBtn = row.querySelector('.move-group-down-btn');
+        const rowId = row.dataset.groupId;
+        
+        if (moveUpBtn) {
+            moveUpBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                move(rowId, 'up');
+            });
+        }
+        
+        if (moveDownBtn) {
+            moveDownBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                move(rowId, 'down');
+            });
+        }
+    });
+}
+
+function saveGroupOrder(tbody) {
+    const newOrder = [];
+    tbody.querySelectorAll('tr[data-group-row-start]').forEach(r => {
+        if (r.dataset.groupId) {
+            newOrder.push(r.dataset.groupId);
+        }
+    });
+    
+    saveGroupOrderArray(newOrder);
+}
+
+function saveGroupOrderArray(orderArr) {
+    chrome.storage.local.get('userConfig', (data) => {
+        const config = data.userConfig || {};
+        config.groupOrder = orderArr;
+        chrome.storage.local.set({ userConfig: config });
+    });
+}
+
 // Обработчики для групповых кнопок в таблице
 function attachGroupRowHandlers() {
     // Редактирование группы (изменение ID)
@@ -359,6 +422,7 @@ function updateStatsTable(stats) {
         const blacklist = typeof config?.blacklist === "object" ? config.blacklist : {};
         const channels = Array.isArray(config?.channels) ? config.channels : [];
         const totalWatched = data.totalWatched || {};
+        const groupOrder = Array.isArray(config?.groupOrder) ? config.groupOrder : [];
         
         // Группируем каналы по dropId
         const groups = {};
@@ -382,85 +446,112 @@ function updateStatsTable(stats) {
             }
         });
         
+        // Сортируем группы по сохраненному порядку
+        const sortedGroupIds = groupOrder.filter(id => groups[id]).concat(
+            Object.keys(groups).filter(id => !groupOrder.includes(id))
+        );
+        
         const fragment = document.createDocumentFragment();
         
-        // Отрисовываем группы
-        Object.values(groups).forEach(group => {
+        // Отрисовываем группы (одна строка на канал, group-данные в rowspan)
+        let groupOrderCounter = 0;
+        sortedGroupIds.forEach(dropId => {
+            const group = groups[dropId];
+            groupOrderCounter += 1;
             const targetSec = group.watchTime ? parseTimeToSeconds(group.watchTime) : 0;
             let groupTotalTime = 0;
-            let groupStatus = "Активен";
             let hasAnyBlocked = false;
             let allPermanent = true;
             
-            // Вычисляем суммарное время группы и статус каждого канала
+            // Вычисляем суммарное время группы и статус
             group.channels.forEach(item => {
                 groupTotalTime += (totalWatched[item.url] || 0);
                 if (blacklist[item.url]) {
                     hasAnyBlocked = true;
-                    if (blacklist[item.url] !== "permanent") {
-                        allPermanent = false;
-                    }
+                    if (blacklist[item.url] !== "permanent") allPermanent = false;
                 }
             });
             
-            // Определяем статус группы на основе статуса каналов
             const allChannelsBlocked = group.channels.every(item => blacklist[item.url]);
+            let groupStatus = "Активен";
             if (allChannelsBlocked) {
                 groupStatus = allPermanent ? "В ЧС навсегда" : "В ЧС";
             } else if (hasAnyBlocked) {
-                groupStatus = "Частично заблокирована";
+                groupStatus = "Частично";
             }
             
-            // Заголовок группы
-            const headerTr = document.createElement("tr");
-            headerTr.className = "grouped-header";
-            const channelUrls = group.channels.map(item => item.url).join(' / ');
-            const btnText = allChannelsBlocked ? 'Разбл.' : 'В ЧС';
-            headerTr.innerHTML = `
-                <td><strong>${channelUrls}</strong></td>
-                <td><span class="group-badge">${group.dropId}</span></td>
-                <td><strong>${secondsToHMS(groupTotalTime)}</strong></td>
-                <td><strong>${secondsToHMS(targetSec)}</strong></td>
-                <td><strong>${groupStatus}</strong></td>
-                <td class="table-actions" rowspan="${group.channels.length}">
-                    <button type="button" class="btn btn-sm btn-accent edit-group-row-btn" data-dropid="${group.dropId}">Изм.</button>
-                    <button type="button" class="btn btn-sm btn-danger delete-group-row-btn" data-dropid="${group.dropId}">Удал.</button>
-                    <button type="button" class="btn btn-sm btn-warning reset-group-btn" data-dropid="${group.dropId}">Сбр.</button>
-                    <button type="button" class="btn btn-sm btn-primary blacklist-group-toggle-btn" data-dropid="${group.dropId}">${btnText}</button>
-                </td>
-                <td></td>
-                <td>
-                    <span class="watch-percent" data-dropid="${group.dropId}">--%</span>
-                </td>
-            `;
-            fragment.appendChild(headerTr);
+            const progressPercent = targetSec > 0 ? Math.min(100, Math.floor((groupTotalTime / targetSec) * 100)) : 0;
+            const groupRowspan = group.channels.length;
             
-            // Каналы в группе
+            // Каждый канал группы — отдельная строка
             group.channels.forEach((item, idx) => {
-                if (idx === 0) return; // Заголовок уже добавлен
-                const tr = document.createElement("tr");
-                tr.className = "grouped-item";
                 const channelTime = totalWatched[item.url] || 0;
                 const isChannelBlocked = !!blacklist[item.url];
-                const channelStatus = isChannelBlocked ? (blacklist[item.url] === "permanent" ? "В ЧС (∞)" : "В ЧС") : "Активен";
-                tr.innerHTML = `
-                    <td style="color:#666;font-size:12px;"><a href="${item.url}" target="_blank" class="channel-link">↳ ${item.url}</a></td>
-                    <td></td>
-                    <td>${secondsToHMS(channelTime)}</td>
-                    <td></td>
-                    <td style="font-size:12px;">${channelStatus}</td>
-                    <td style="padding:4px;text-align:center;">
-                        <button type="button" class="btn btn-sm btn-primary channel-blacklist-btn" data-url="${item.url}" style="padding:4px 6px;font-size:11px;flex:1;min-width:50px;">${isChannelBlocked ? 'Разбл.' : 'В ЧС'}</button>
-                    </td>
-                    <td></td>
-                    <td></td>
-                `;
+                let channelStatus = "Активен";
+                let channelUntil = "";
+                
+                if (blacklist[item.url] === "permanent") {
+                    channelStatus = "В ЧС навсегда";
+                    channelUntil = "∞";
+                } else if (blacklist[item.url]) {
+                    const msLeft = blacklist[item.url] - Date.now();
+                    channelStatus = "В ЧС";
+                    channelUntil = msLeft > 0 ? msToHMS(msLeft) : "0:00:00";
+                }
+                
+                const tr = document.createElement("tr");
+                tr.classList.add("group-row");
+                if (idx === 0) {
+                    tr.classList.add("group-first");
+                    tr.dataset.groupId = group.dropId;
+                    tr.dataset.groupRowStart = true;
+                }
+                
+                // Колонки с rowspan только для суммы/цели/прогресса/приоритета; статус теперь поканально
+                if (idx === 0) {
+                    tr.innerHTML = `
+                        <td class="group-cell" rowspan="${groupRowspan}">
+                            <div style="display:flex;flex-direction:column;gap:4px;align-items:center;">
+                                <button class="btn btn-xs move-group-up-btn" title="Переместить вверх">↑</button>
+                                <span>${group.dropId}</span>
+                                <button class="btn btn-xs move-group-down-btn" title="Переместить вниз">↓</button>
+                            </div>
+                        </td>
+                        <td><a href="${item.url}" target="_blank" class="channel-link">${item.url}</a></td>
+                        <td class="time-cell">${secondsToHMS(channelTime)}</td>
+                        <td class="group-cell time-cell" rowspan="${groupRowspan}">${secondsToHMS(groupTotalTime)}</td>
+                        <td class="group-cell time-cell" rowspan="${groupRowspan}">${secondsToHMS(targetSec)}</td>
+                        <td class="status-cell ${statusClassFor(channelStatus)}">${channelStatus}${channelUntil ? ` (${channelUntil})` : ''}</td>
+                        <td class="group-cell" rowspan="${groupRowspan}"><span class="progress-text">${progressPercent}%</span></td>
+                        <td class="table-actions">
+                            <button class="btn btn-xs btn-accent edit-channel-btn" data-url="${item.url}" title="Изменить канал">Изм</button>
+                            <button class="btn btn-xs btn-danger delete-channel-btn" data-url="${item.url}" title="Удалить канал">Удл</button>
+                            <button class="btn btn-xs btn-warning reset-channel-btn" data-url="${item.url}" title="Сбросить время">Сбр</button>
+                            <button class="btn btn-xs btn-primary channel-blacklist-btn" data-url="${item.url}">${isChannelBlocked ? 'Раз' : 'ЧС'}</button>
+                        </td>
+                        <td class="priority-cell" rowspan="${groupRowspan}">${groupOrderCounter}</td>
+                    `;
+                } else {
+                    tr.innerHTML = `
+                        <td><a href="${item.url}" target="_blank" class="channel-link">${item.url}</a></td>
+                        <td class="time-cell">${secondsToHMS(channelTime)}</td>
+                        <td class="status-cell ${statusClassFor(channelStatus)}">${channelStatus}${channelUntil ? ` (${channelUntil})` : ''}</td>
+                        <td class="table-actions">
+                            <button class="btn btn-xs btn-accent edit-channel-btn" data-url="${item.url}" title="Изменить канал">Изм</button>
+                            <button class="btn btn-xs btn-danger delete-channel-btn" data-url="${item.url}" title="Удалить канал">Удл</button>
+                            <button class="btn btn-xs btn-warning reset-channel-btn" data-url="${item.url}" title="Сбросить время">Сбр</button>
+                            <button class="btn btn-xs btn-primary channel-blacklist-btn" data-url="${item.url}">${isChannelBlocked ? 'Раз' : 'ЧС'}</button>
+                        </td>
+                        
+                    `;
+                }
+                
                 fragment.appendChild(tr);
             });
         });
         
         // Отрисовываем негруппированные каналы
-        ungrouped.forEach(item => {
+        ungrouped.forEach((item, idx) => {
             const url = item.url;
             const ch = item.ch;
             const sec = stats && stats[url] ? stats[url] : 0;
@@ -470,35 +561,42 @@ function updateStatsTable(stats) {
             } else {
                 targetSec = ch.watchTime ? parseTimeToSeconds(ch.watchTime) : (config && config.watchTime ? parseTimeToSeconds(config.watchTime) : 0);
             }
+            
             let statusText = "Активен";
+            let statusClass = "status-active";
             let untilText = "";
-
+            
             if (blacklist[url] === "permanent") {
                 statusText = "В ЧС навсегда";
+                statusClass = "status-blacklist";
                 untilText = "∞";
             } else if (blacklist[url]) {
                 const msLeft = blacklist[url] - Date.now();
                 statusText = "В ЧС";
+                statusClass = "status-blacklist";
                 untilText = msLeft > 0 ? msToHMS(msLeft) : "0:00:00";
             }
-
+            
+            const progressPercent = targetSec > 0 ? Math.min(100, Math.floor((sec / targetSec) * 100)) : 0;
+            const isBlacklisted = !!blacklist[url];
+            
             const tr = document.createElement("tr");
+            tr.classList.add("ungrouped-row");
             tr.innerHTML = `
+                <td style="text-align:center;">—</td>
                 <td><a href="${url}" target="_blank" class="channel-link">${url}</a></td>
-                <td style="text-align:center;"><span style="color:#999;">—</span></td>
-                <td>${secondsToHMS(sec)}</td>
-                <td>${secondsToHMS(targetSec)}</td>
-                <td>${statusText}</td>
+                <td class="time-cell">${secondsToHMS(sec)}</td>
+                <td class="time-cell">${secondsToHMS(sec)}</td>
+                <td class="time-cell">${secondsToHMS(targetSec)}</td>
+                <td class="${statusClass}">${statusText}</td>
+                <td><span class="progress-text">${progressPercent}%</span></td>
                 <td class="table-actions">
-                    <button type="button" class="btn btn-sm btn-accent edit-btn" data-url="${url}">Изм.</button>
-                    <button type="button" class="btn btn-sm btn-danger delete-btn" data-url="${url}">Удал.</button>
-                    <button type="button" class="btn btn-sm btn-warning reset-watch-btn" data-url="${url}">Сбр.</button>
-                    <button type="button" class="btn btn-sm btn-primary blacklist-toggle-btn" data-url="${url}">${blacklist[url] ? 'Разбл.' : 'В ЧС'}</button>
+                    <button class="btn btn-xs btn-accent edit-btn" data-url="${url}">Изм</button>
+                    <button class="btn btn-xs btn-danger delete-btn" data-url="${url}">Удл</button>
+                    <button class="btn btn-xs btn-warning reset-watch-btn" data-url="${url}">Сбр</button>
+                    <button class="btn btn-xs btn-primary blacklist-toggle-btn" data-url="${url}">${isBlacklisted ? 'Раз' : 'ЧС'}</button>
                 </td>
-                <td>${untilText}</td>
-                <td>
-                    <span class="watch-percent" data-url="${url}">--%</span>
-                </td>
+                <td>—</td>
             `;
             fragment.appendChild(tr);
         });
@@ -507,6 +605,9 @@ function updateStatsTable(stats) {
         tbody.innerHTML = "";
         tbody.appendChild(fragment);
         
+        // Добавляем обработчики для кнопок перемещения групп
+        attachMoveGroupHandlers(tbody);
+        
         // Обработчики для групповых кнопок
         attachGroupRowHandlers();
         
@@ -514,7 +615,7 @@ function updateStatsTable(stats) {
         document.querySelectorAll('.channel-blacklist-btn').forEach(btn => {
             btn.addEventListener('click', () => {
                 const url = btn.getAttribute('data-url');
-                const isUnblock = btn.textContent.trim() === 'Разбл.';
+                const isUnblock = btn.textContent.trim() === 'Раз';
                 
                 chrome.storage.local.get('userConfig', (data) => {
                     const config = data.userConfig || { channels: [] };
@@ -539,6 +640,59 @@ function updateStatsTable(stats) {
                 });
             });
         });
+        
+        // Обработчики для кнопок редактирования/удаления/сброса каналов в группах
+        document.querySelectorAll('.edit-channel-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const url = btn.getAttribute('data-url');
+                chrome.storage.local.get('userConfig', (data) => {
+                    const cfg = data.userConfig || { channels: [] };
+                    const idx = (cfg.channels || []).findIndex(ch => (typeof ch === 'string' ? ch : ch.url) === url);
+                    if (idx === -1) return;
+                    const ch = cfg.channels[idx];
+                    const curUrl = typeof ch === 'string' ? ch : ch.url;
+                    const curWatch = typeof ch === 'string' ? '' : (ch.watchTime || '');
+                    const curDropId = typeof ch === 'object' ? (ch.dropId || '') : '';
+                    
+                    const newUrl = showPrompt('Изменить URL канала:', curUrl);
+                    if (!newUrl) return;
+                    const newWatch = showPrompt('Изменить время просмотра (H.MM.SS) или оставьте пустым для значения по умолчанию:', curWatch);
+                    const newDropId = showPrompt('Изменить ID группы дропа (или оставьте пустым):', curDropId);
+                    
+                    const newEntry = {
+                        url: newUrl,
+                        ...(newWatch && { watchTime: newWatch }),
+                        ...(newDropId && { dropId: newDropId })
+                    };
+                    
+                    cfg.channels[idx] = newEntry;
+                    chrome.storage.local.set({ userConfig: cfg }, () => { 
+                        pollStats();
+                        renderGroupsView();
+                    });
+                });
+            });
+        });
+        
+        document.querySelectorAll('.delete-channel-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const url = btn.getAttribute('data-url');
+                if (!showConfirm('Удалить канал ' + url + '?')) return;
+                chrome.storage.local.get('userConfig', (data) => {
+                    const cfg = data.userConfig || { channels: [] };
+                    cfg.channels = (cfg.channels || []).filter(ch => (typeof ch === 'string' ? ch : ch.url) !== url);
+                    chrome.storage.local.set({ userConfig: cfg }, () => { pollStats(); });
+                });
+            });
+        });
+        
+        document.querySelectorAll('.reset-channel-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const url = btn.getAttribute('data-url');
+                resetWatchTime(url);
+            });
+        });
+
         
         // Делегированный обработчик кликов по таблице — один обработчик на tbody
         const tbodyEl = document.querySelector('#statsTable tbody');

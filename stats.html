@@ -19,25 +19,29 @@
         </div>
       </div>
 
-    <table id="statsTable" class="card">
+    <table id="statsTable" class="card stats-table">
         <thead>
             <tr>
-                <th>Каналы и действия</th>
                 <th>Группа</th>
-                <th>Общее время группы</th>
-                <th>Целевое время</th>
+                <th>Канал</th>
+                <th class="time-cell">Время просмотра</th>
+                <th class="time-cell">Общее время просмотра</th>
+                <th class="time-cell">Целевое время</th>
                 <th>Статус</th>
                 <th>Прогресс</th>
+                <th>Кнопки</th>
+                <th>Приоритет</th>
             </tr>
         </thead>
         <tbody></tbody>
         <tfoot>
             <tr>
-                <td><input id="newChannelUrlInput" type="text" placeholder="https://www.twitch.tv/..." style="width:100%;"></td>
-                <td><input id="newChannelDropIdInput" type="text" placeholder="drop_1" style="width:65px;"></td>
-                <td><input id="newChannelWatchTimeInput" type="text" placeholder="H.MM.SS" style="width:100px;"></td>
-                <td></td>
-                <td><button id="addChannelRowButton" class="btn btn-accent">Добавить</button></td>
+                <td><input id="newChannelDropIdInput" type="text" placeholder="1" style="width:50px;"></td>
+                <td><input id="newChannelUrlInput" type="text" placeholder="twitch.tv/channel" style="width:100%;"></td>
+                <td colspan="2"></td>
+                <td><input id="newChannelWatchTimeInput" type="text" placeholder="00:10:00" style="width:80px;"></td>
+                <td colspan="2"></td>
+                <td><button id="addChannelRowButton" class="btn btn-accent btn-sm">Добавить</button></td>
                 <td></td>
             </tr>
         </tfoot>
