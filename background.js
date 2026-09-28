@@ -2107,8 +2107,43 @@ function performInventorySync(requestedPlatform = 'auto', callback) {
             if (tabs && tabs.length > 0) {
                 const targetTab = tabs[0];
 
+                // Вкладка уже открыта — перезагружаем её чтобы данные были свежими
+                log(`[Инвентарь] Обновляем страницу инвентаря (вкладка ${targetTab.id})...`);
+                chrome.tabs.reload(targetTab.id, { bypassCache: true }, () => {
+                    // Ждём завершения загрузки страницы
+                    let loadTimeout = null;
+                    let loadAttempts = 0;
+                    const MAX_LOAD_WAIT_MS = 8000;
+                    const CHECK_INTERVAL_MS = 500;
+
+                    function waitForLoad() {
+                        chrome.tabs.get(targetTab.id, (tab) => {
+                            if (chrome.runtime.lastError || !tab) {
+                                // Вкладка закрыта пока ждали
+                                callback && callback({ ok: false, error: 'Вкладка инвентаря была закрыта во время обновления' });
+                                return;
+                            }
+                            if (tab.status === 'complete') {
+                                // Страница загружена — даём ещё 1.5 сек на рендер JS
+                                setTimeout(executeScrape, 1500);
+                            } else if (loadAttempts * CHECK_INTERVAL_MS < MAX_LOAD_WAIT_MS) {
+                                loadAttempts++;
+                                loadTimeout = setTimeout(waitForLoad, CHECK_INTERVAL_MS);
+                            } else {
+                                // Таймаут — всё равно пробуем парсить
+                                log(`[Инвентарь] Страница долго грузится, пробуем считать данные...`);
+                                executeScrape();
+                            }
+                        });
+                    }
+
+                    // Небольшая задержка перед первой проверкой статуса (reload не мгновенный)
+                    loadTimeout = setTimeout(waitForLoad, 300);
+                });
+
                 let attempts = 0;
                 function executeScrape() {
+
                     attempts++;
                     try {
                         chrome.scripting.executeScript({
