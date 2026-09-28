@@ -34,18 +34,7 @@ function isStreamerOnline() {
             return false;
         }
 
-        // Для Twitch: КРИТИЧНО — проверяем наличие видеоплеера с реальным источником ПЕРВЫМ
-        // Если видео есть и работает — почти наверняка стример онлайн (работает плеер)
-        const videoElement = document.querySelector('video');
-        if (videoElement) {
-            const src = (videoElement.currentSrc || videoElement.src || '').trim();
-            if (src && src.length > 0) {
-                // Есть реальный источник в плеере — стример ОНЛАЙН
-                return true;
-            }
-        }
-
-        // Проверяем явные ОФЛАЙН индикаторы в шапке канала (главная зона, не сайдбар)
+        // Сначала проверяем явные ОФЛАЙН индикаторы в шапке канала (главная зона, не сайдбар)
         // Ищем элементы с текстом 'Не в сети' или 'offline' в основном контенте (верх страницы)
         const headerArea = document.querySelector('[data-a-target="channel-header-subscribe-button"]') || 
                           document.querySelector('[data-a-target="channel-header"]') ||
@@ -57,6 +46,15 @@ function isStreamerOnline() {
             const headerText = (headerArea.innerText || '').toLowerCase();
             if (headerText.indexOf('не в сети') !== -1 || headerText.indexOf('offline') !== -1) {
                 return false; // Стример офлайн
+            }
+        }
+
+        // Для Twitch: проверяем наличие видеоплеера с реальным источником
+        const videoElement = document.querySelector('video');
+        if (videoElement) {
+            const src = (videoElement.currentSrc || videoElement.src || '').trim();
+            if (src && src.length > 0) {
+                return true;
             }
         }
 
@@ -259,6 +257,8 @@ try {
 // Автоматический сбор диагностического лога при загрузке страницы
 function collectAndSendDiagnostic() {
     try {
+        const host = (location && location.hostname) ? location.hostname.toLowerCase() : '';
+        if (!host.includes('twitch.tv') && !host.includes('kick.com')) return;
         const bodyText = (document.body && document.body.innerText) ? document.body.innerText : '';
         const streamerOnline = (typeof isStreamerOnline === 'function') ? isStreamerOnline() : null;
         const hasVideo = !!document.querySelector('video');

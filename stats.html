@@ -17,7 +17,11 @@
             <label>tempBlacklistSeconds: <input id="tempBlacklistSecondsInput" type="text" placeholder="0.00.30" style="width:120px;margin-left:6px;"></label>
             <button id="saveConfigFormButton" class="btn btn-accent" style="margin-left:6px;">Сохранить конфиг</button>
         </div>
+      <div style="display:flex;gap:8px;margin-bottom:12px;align-items:center;">
+          <button id="toggleGroupsView" class="btn btn-primary">Показать/скрыть карточки групп</button>
+          <button id="createNewGroup" class="btn btn-accent">+ Создать новую группу</button>
       </div>
+      <div id="groupsContainer" style="display:none;margin-bottom:12px;"></div>
 
     <table id="statsTable" class="card stats-table">
         <thead>
@@ -36,12 +40,12 @@
         <tbody></tbody>
         <tfoot>
             <tr>
-                <td><input id="newChannelDropIdInput" type="text" placeholder="1" style="width:50px;"></td>
-                <td><input id="newChannelUrlInput" type="text" placeholder="twitch.tv/channel" style="width:100%;"></td>
+                <td><input id="newChannelDropIdInput" type="text" placeholder="drop_1" style="width:60px;"></td>
+                <td><input id="newChannelUrlInput" type="text" placeholder="https://www.twitch.tv/channel" style="width:100%;"></td>
                 <td colspan="2"></td>
-                <td><input id="newChannelWatchTimeInput" type="text" placeholder="00:10:00" style="width:80px;"></td>
+                <td><input id="newChannelWatchTimeInput" type="text" placeholder="01:00:00" style="width:80px;"></td>
                 <td colspan="2"></td>
-                <td><button id="addChannelRowButton" class="btn btn-accent btn-sm">Добавить</button></td>
+                <td><button id="addChannelRowButton" class="btn btn-accent btn-sm" style="width:100%;">Добавить</button></td>
                 <td></td>
             </tr>
         </tfoot>

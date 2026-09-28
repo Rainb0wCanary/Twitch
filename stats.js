@@ -1,4 +1,5 @@
 function secondsToHMS(sec) {
+    if (typeof sec !== "number" || isNaN(sec) || sec <= 0) return "0:00:00";
     sec = Math.floor(sec);
     let h = Math.floor(sec / 3600);
     let m = Math.floor((sec % 3600) / 60);
@@ -375,7 +376,8 @@ function attachGroupRowHandlers() {
     document.querySelectorAll('.blacklist-group-toggle-btn').forEach(btn => {
         btn.addEventListener('click', () => {
             const dropId = btn.getAttribute('data-dropid');
-            const isUnblock = btn.textContent.trim() === 'Разбл.';
+            const txt = btn.textContent.trim();
+            const isUnblock = txt === 'Разбл.' || txt === 'Раз';
             
             chrome.storage.local.get(['userConfig', 'totalWatched'], (data) => {
                 const config = data.userConfig || { channels: [] };
@@ -512,9 +514,19 @@ function updateStatsTable(stats) {
                     tr.innerHTML = `
                         <td class="group-cell" rowspan="${groupRowspan}">
                             <div style="display:flex;flex-direction:column;gap:4px;align-items:center;">
-                                <button class="btn btn-xs move-group-up-btn" title="Переместить вверх">↑</button>
-                                <span>${group.dropId}</span>
-                                <button class="btn btn-xs move-group-down-btn" title="Переместить вниз">↓</button>
+                                <div style="display:flex;gap:4px;">
+                                    <button class="btn btn-xs move-group-up-btn" title="Переместить вверх">↑</button>
+                                    <button class="btn btn-xs move-group-down-btn" title="Переместить вниз">↓</button>
+                                </div>
+                                <span style="font-weight:bold;">${group.dropId}</span>
+                                <div style="display:flex;gap:2px;flex-wrap:wrap;justify-content:center;">
+                                    <button class="btn btn-xs btn-accent edit-group-row-btn" data-dropid="${group.dropId}" title="Переименовать группу">Изм</button>
+                                    <button class="btn btn-xs btn-danger delete-group-row-btn" data-dropid="${group.dropId}" title="Удалить группу">Удл</button>
+                                </div>
+                                <div style="display:flex;gap:2px;flex-wrap:wrap;justify-content:center;">
+                                    <button class="btn btn-xs btn-warning reset-group-btn" data-dropid="${group.dropId}" title="Сбросить время группы">Сбр</button>
+                                    <button class="btn btn-xs btn-primary blacklist-group-toggle-btn" data-dropid="${group.dropId}" title="Блокировать/разблокировать группу">${allChannelsBlocked ? 'Раз' : 'ЧС'}</button>
+                                </div>
                             </div>
                         </td>
                         <td><a href="${item.url}" target="_blank" class="channel-link">${item.url}</a></td>
@@ -554,7 +566,7 @@ function updateStatsTable(stats) {
         ungrouped.forEach((item, idx) => {
             const url = item.url;
             const ch = item.ch;
-            const sec = stats && stats[url] ? stats[url] : 0;
+            const sec = totalWatched && totalWatched[url] ? totalWatched[url] : (stats && stats[url] ? stats[url] : 0);
             let targetSec = 0;
             if (typeof ch === "string") {
                 targetSec = config && config.watchTime ? parseTimeToSeconds(config.watchTime) : 0;
@@ -746,7 +758,7 @@ function updateStatsTable(stats) {
                 }
                 if (btn.classList.contains('blacklist-toggle-btn')) {
                     const text = btn.textContent && btn.textContent.trim();
-                    const isUnblock = text === 'Разблокировать';
+                    const isUnblock = text === 'Разблокировать' || text === 'Раз';
                     if (isUnblock) {
                         setChannelActive(url, true);
                         return;
@@ -858,17 +870,7 @@ function setChannelActive(url, active) {
 }
 
 function addToBlacklist(url) {
-    chrome.storage.local.get("userConfig", (data) => {
-        let config = data.userConfig;
-        if (!config) return;
-        if (!Array.isArray(config.blacklist)) config.blacklist = [];
-        if (!config.blacklist.includes(url)) {
-            config.blacklist.push(url);
-            chrome.storage.local.set({ userConfig: config }, () => {
-                showAlert("Канал добавлен в черный список!");
-            });
-        }
-    });
+    setChannelActive(url, false);
 }
 
 function pollStats() {
@@ -901,10 +903,15 @@ function resetWatchTime(url) {
 function parseTimeToSeconds(val) {
     if (typeof val === "number") return val;
     if (typeof val === "string") {
-        // поддержка формата часы.минуты.секунды и часы.минуты,секунды
-        let parts = val.split(/[.,]/).map(Number);
-        let h = parts[0] || 0, m = parts[1] || 0, s = parts[2] || 0;
-        return h * 3600 + m * 60 + s;
+        let trimmed = val.trim();
+        if (/^\d+$/.test(trimmed)) return parseInt(trimmed, 10);
+        let parts = trimmed.split(/[:.,]/).map(Number);
+        if (parts.length === 3) {
+            return (parts[0] || 0) * 3600 + (parts[1] || 0) * 60 + (parts[2] || 0);
+        } else if (parts.length === 2) {
+            return (parts[0] || 0) * 60 + (parts[1] || 0);
+        }
+        return parts[0] || 0;
     }
     return 0;
 }
@@ -923,10 +930,9 @@ document.addEventListener("DOMContentLoaded", () => {
     // Переключатель логов
     const toggleLogs = document.getElementById("toggleLogsCheckbox");
     if (toggleLogs) {
-        chrome.runtime.sendMessage({ action: "getLog" }, (resp) => {
-            // Если логи пустые, выключаем чекбокс
-            if (resp && Array.isArray(resp.log) && resp.log.length === 0) {
-                toggleLogs.checked = false;
+        chrome.runtime.sendMessage({ action: "getLoggingEnabled" }, (resp) => {
+            if (resp && typeof resp.loggingEnabled === "boolean") {
+                toggleLogs.checked = resp.loggingEnabled;
             }
         });
         toggleLogs.addEventListener("change", function() {
@@ -951,24 +957,26 @@ document.addEventListener("DOMContentLoaded", () => {
             reader.onload = (e) => {
                 try {
                     const config = JSON.parse(e.target.result);
-                    if (config && config.searchUrlPart) {
+                    if (config && config.searchUrlPart && Array.isArray(config.channels) && config.channels.length > 0) {
                         chrome.storage.local.set({ userConfig: config }, () => {
                             showAlert("Конфиг успешно загружен!");
-                            // Обновляем значения формы конфигурации сразу после загрузки
-                            try { loadConfigForm(); } catch (e) { /* если функция недоступна — игнорируем */ }
+                            try { loadConfigForm(); } catch (e) { /* ignore */ }
                             pollStats();
+                            renderGroupsView();
                         });
-                    } else {
+                    } else if (!config || !config.searchUrlPart) {
                         showAlert("В конфиге отсутствует searchUrlPart!");
+                    } else {
+                        showAlert("В конфиге отсутствует список channels!");
                     }
                 } catch (err) {
                     console.error('Ошибка чтения файла конфига', err);
-                    showAlert("Ошибка чтения файла конфига!");
+                    showAlert("Ошибка чтения файла конфига! Проверьте валидность JSON.");
+                } finally {
+                    fileInput.value = "";
                 }
             };
             reader.readAsText(file);
-            // очистить input, чтобы можно было снова выбрать тот же файл при повторной загрузке
-            fileInput.value = "";
         });
     }
 
@@ -986,9 +994,11 @@ document.addEventListener("DOMContentLoaded", () => {
     if (deleteConfigButton) {
         deleteConfigButton.addEventListener("click", function() {
             if (showConfirm("Вы уверены, что хотите полностью удалить конфиг из хранилища браузера? Это действие необратимо.")) {
-                chrome.storage.local.remove(["userConfig"], function() {
-                    showAlert("Конфиг удалён из хранилища.");
-                    location.reload();
+                chrome.runtime.sendMessage({ action: "stopWatching" }, () => {
+                    chrome.storage.local.remove(["userConfig"], function() {
+                        showAlert("Конфиг удалён из хранилища.");
+                        location.reload();
+                    });
                 });
             }
         });
@@ -1007,7 +1017,7 @@ document.addEventListener("DOMContentLoaded", () => {
             const cfg = data.userConfig || {};
             if (searchUrlPartInput) searchUrlPartInput.value = cfg.searchUrlPart || '';
             if (checkIntervalMinutesInput) checkIntervalMinutesInput.value = cfg.checkIntervalMinutes || '';
-            if (waitBeforeCheckInput) waitBeforeCheckInput.value = cfg.waitBeforeCheck || '';
+            if (waitBeforeCheckInput) waitBeforeCheckInput.value = (cfg.waitBeforeCheck !== undefined) ? cfg.waitBeforeCheck : '';
             if (maxAttemptsInput) maxAttemptsInput.value = cfg.maxAttempts || '';
             if (tempBlacklistSecondsInput) tempBlacklistSecondsInput.value = cfg.tempBlacklistSeconds || '';
         });
@@ -1017,11 +1027,19 @@ document.addEventListener("DOMContentLoaded", () => {
         saveConfigFormButton.addEventListener('click', () => {
             chrome.storage.local.get('userConfig', (data) => {
                 const cfg = data.userConfig || {};
-                cfg.searchUrlPart = searchUrlPartInput ? searchUrlPartInput.value.trim() : cfg.searchUrlPart;
-                cfg.checkIntervalMinutes = checkIntervalMinutesInput ? Number(checkIntervalMinutesInput.value) || cfg.checkIntervalMinutes : cfg.checkIntervalMinutes;
-                cfg.waitBeforeCheck = waitBeforeCheckInput ? Number(waitBeforeCheckInput.value) || cfg.waitBeforeCheck : cfg.waitBeforeCheck;
-                cfg.maxAttempts = maxAttemptsInput ? Number(maxAttemptsInput.value) || cfg.maxAttempts : cfg.maxAttempts;
-                cfg.tempBlacklistSeconds = tempBlacklistSecondsInput ? tempBlacklistSecondsInput.value.trim() || cfg.tempBlacklistSeconds : cfg.tempBlacklistSeconds;
+                if (searchUrlPartInput) cfg.searchUrlPart = searchUrlPartInput.value.trim();
+                if (checkIntervalMinutesInput && checkIntervalMinutesInput.value !== '') {
+                    cfg.checkIntervalMinutes = Math.max(1, Number(checkIntervalMinutesInput.value) || 1);
+                }
+                if (waitBeforeCheckInput && waitBeforeCheckInput.value !== '') {
+                    cfg.waitBeforeCheck = Math.max(0, Number(waitBeforeCheckInput.value) || 0);
+                }
+                if (maxAttemptsInput && maxAttemptsInput.value !== '') {
+                    cfg.maxAttempts = Math.max(1, Number(maxAttemptsInput.value) || 1);
+                }
+                if (tempBlacklistSecondsInput) {
+                    cfg.tempBlacklistSeconds = tempBlacklistSecondsInput.value.trim();
+                }
                 chrome.storage.local.set({ userConfig: cfg }, () => {
                     showAlert('Конфиг сохранён');
                     pollStats();
@@ -1041,15 +1059,37 @@ document.addEventListener("DOMContentLoaded", () => {
 
     if (addChannelRowButton) {
         addChannelRowButton.addEventListener('click', () => {
-            const url = newChannelUrlInput ? newChannelUrlInput.value.trim() : '';
+            const rawUrl = newChannelUrlInput ? newChannelUrlInput.value.trim() : '';
             const watchTime = newChannelWatchTimeInput ? newChannelWatchTimeInput.value.trim() : '';
             const dropId = newChannelDropIdInput ? newChannelDropIdInput.value.trim() : '';
-            if (!url) { showAlert('Введите URL канала'); return; }
-            // простая валидация URL
-            if (!/^https?:\/\/.+/.test(url)) { if (!/^www\./.test(url)) { showAlert('Введите корректный URL'); return; } }
+            if (!rawUrl) { showAlert('Введите URL канала'); return; }
+
+            let url = rawUrl;
+            if (!/^https?:\/\//i.test(url)) {
+                url = 'https://' + url;
+            }
+            try {
+                const u = new URL(url);
+                const cleanPath = u.pathname.replace(/\/+$/, '');
+                url = `${u.protocol}//${u.host.toLowerCase()}${cleanPath}`;
+            } catch (e) {
+                showAlert('Введите корректный URL канала');
+                return;
+            }
+
             chrome.storage.local.get('userConfig', (data) => {
                 const cfg = data.userConfig || { channels: [] };
                 if (!Array.isArray(cfg.channels)) cfg.channels = [];
+
+                const exists = cfg.channels.some(ch => {
+                    const cUrl = typeof ch === 'string' ? ch : ch.url;
+                    return (cUrl || '').toLowerCase() === url.toLowerCase();
+                });
+                if (exists) {
+                    showAlert('Этот канал уже есть в конфигурации!');
+                    return;
+                }
+
                 const entry = {
                     url,
                     ...(watchTime && { watchTime }),

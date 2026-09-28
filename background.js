@@ -1,7 +1,6 @@
 let isRunning = false;
 let currentChannelIndex = 0;
 let timerInterval = null;
-// Устаревшее имя оставлено для совместимости; дополнительно используются watchTimerInterval и watchLinkCheckInterval
 let watchTimerInterval = null;
 let watchLinkCheckInterval = null;
 let channels = [];
@@ -9,19 +8,76 @@ let searchUrlPart = "";
 let defaultWatchTime = 30;
 let defaultWaitBeforeCheck = 5;
 let logBuffer = [];
-let activeTabId = null;
 let streamTabId = null; // id вкладки, где крутятся стримы
 let streamWindowId = null; // id выделенного окна, где держим вкладку со стримом
 let totalWatched = {}; // { url: seconds }
 let currentStreamInfo = { url: null, secondsLeft: 0 };
-let userPrevTabId = null; // id вкладки пользователя до переключения на стрим
 let loggingEnabled = false;
-let currentRunId = 0; // маркер запуска, используется для инвалидирования устаревших таймеров/обратных вызовов
-let scheduledCheckTimeout = null; // id таймаута для запланированной проверки checkChannel (в watchNextChannel/manual)
-let pendingDoFindTimeout = null; // id таймаута для отложенного вызова doFindLink в checkChannel
+let currentRunId = 0; // маркер запуска
+let scheduledCheckTimeout = null;
+let pendingDoFindTimeout = null;
+let waitForActiveInterval = null;
+let blacklistAutoUnlockInterval = null;
+
+// Инициализация и синхронизация состояния из chrome.storage.local
+chrome.storage.local.get(["totalWatched", "loggingEnabled", "userConfig", "isRunning", "logBuffer"], (data) => {
+    if (data.totalWatched && typeof data.totalWatched === 'object') {
+        totalWatched = data.totalWatched;
+    }
+    if (typeof data.loggingEnabled === 'boolean') {
+        loggingEnabled = data.loggingEnabled;
+    }
+    if (Array.isArray(data.logBuffer)) {
+        logBuffer = data.logBuffer;
+    }
+    if (data.userConfig) {
+        syncConfigState(data.userConfig);
+    }
+    if (data.isRunning) {
+        log("Восстановление процесса просмотра после пробуждения Service Worker...");
+        if (data.userConfig) {
+            startWatching(data.userConfig, true);
+        }
+    }
+});
+
+// Слушатель внешних изменений хранилища (например, из stats.html)
+chrome.storage.onChanged.addListener((changes, area) => {
+    if (area === "local") {
+        if (changes.userConfig && changes.userConfig.newValue) {
+            syncConfigState(changes.userConfig.newValue);
+        }
+        if (changes.loggingEnabled) {
+            loggingEnabled = !!changes.loggingEnabled.newValue;
+        }
+        if (changes.totalWatched && changes.totalWatched.newValue) {
+            totalWatched = changes.totalWatched.newValue;
+        }
+    }
+});
+
+function syncConfigState(config) {
+    if (!config || !Array.isArray(config.channels)) return;
+    const mappedChannels = config.channels.map(ch =>
+        typeof ch === "string"
+            ? { url: ch, watchTime: parseTimeToSeconds(config.watchTime), waitBeforeCheck: config.waitBeforeCheck }
+            : {
+                url: ch.url,
+                watchTime: parseTimeToSeconds(ch.watchTime || config.watchTime),
+                waitBeforeCheck: ch.waitBeforeCheck !== undefined ? ch.waitBeforeCheck : config.waitBeforeCheck,
+                dropId: ch.dropId || null
+            }
+    );
+    const order = Array.isArray(config.groupOrder) ? config.groupOrder : [];
+    channels = applyGroupOrder(mappedChannels, order);
+    searchUrlPart = config.searchUrlPart || "";
+    defaultWatchTime = parseTimeToSeconds(config.watchTime) || 30;
+    defaultWaitBeforeCheck = config.waitBeforeCheck !== undefined ? config.waitBeforeCheck : 5;
+}
 
 function setLoggingEnabled(enabled) {
     loggingEnabled = enabled;
+    chrome.storage.local.set({ loggingEnabled: enabled });
     if (!enabled) {
         logBuffer = [];
         chrome.storage.local.set({ logBuffer: [] });
@@ -33,53 +89,25 @@ function log(msg) {
     logBuffer.push(msg);
     if (logBuffer.length > 100) logBuffer.shift();
     chrome.storage.local.set({ logBuffer });
-    // Для popup: если открыт, отправим обновление (безопасно)
     try {
         chrome.runtime.sendMessage({ action: "logUpdate", log: logBuffer }, () => {
-                // игнорируем ошибки, когда нет получателя
-            if (chrome.runtime.lastError) {
-                // нет получателя (popup закрыт) — это нормально
-            }
+            if (chrome.runtime.lastError) {}
         });
-    } catch (e) {
-        // игнорируем
-    }
-}
-
-// Вспомогательная функция для безопасной отправки runtime-сообщений из background
-function safeRuntimeSendMessage(message, callback) {
-    try {
-        chrome.runtime.sendMessage(message, (resp) => {
-            if (chrome.runtime.lastError) {
-                // нет получателя или другая ошибка
-                if (typeof callback === 'function') callback(undefined, chrome.runtime.lastError);
-                return;
-            }
-            if (typeof callback === 'function') callback(resp, null);
-        });
-    } catch (err) {
-        if (typeof callback === 'function') callback(undefined, err);
-    }
-}
-
-function setActiveTabId(cb) {
-    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-        if (tabs[0]) {
-            activeTabId = tabs[0].id;
-            cb && cb();
-        } else {
-            log("Активная вкладка не найдена.");
-        }
-    });
+    } catch (e) {}
 }
 
 function parseTimeToSeconds(val) {
     if (typeof val === "number") return val;
     if (typeof val === "string") {
-        // поддержка формата часы.минуты.секунды и часы.минуты,секунды
-        let parts = val.split(/[.,]/).map(Number);
-        let h = parts[0] || 0, m = parts[1] || 0, s = parts[2] || 0;
-        return h * 3600 + m * 60 + s;
+        let trimmed = val.trim();
+        if (/^\d+$/.test(trimmed)) return parseInt(trimmed, 10);
+        let parts = trimmed.split(/[:.,]/).map(Number);
+        if (parts.length === 3) {
+            return (parts[0] || 0) * 3600 + (parts[1] || 0) * 60 + (parts[2] || 0);
+        } else if (parts.length === 2) {
+            return (parts[0] || 0) * 60 + (parts[1] || 0);
+        }
+        return parts[0] || 0;
     }
     return 0;
 }
@@ -95,7 +123,6 @@ function resolveTempBlacklistSeconds(config, customDurationSeconds) {
     return tempSeconds > 0 ? tempSeconds : 60;
 }
 
-// Применить порядок групп к списку каналов
 function applyGroupOrder(items, groupOrder) {
     if (!Array.isArray(items)) return [];
     if (!Array.isArray(groupOrder) || groupOrder.length === 0) return items;
@@ -116,14 +143,11 @@ function applyGroupOrder(items, groupOrder) {
             delete byGroup[id];
         }
     });
-    // добавляем группы, которых не было в порядке
     Object.values(byGroup).forEach(arr => ordered.push(...arr));
-    // добавляем негрупповые в конце
     ordered.push(...noGroup);
     return ordered;
 }
 
-// Получить dropId для URL канала
 function getDropId(url, config) {
     if (!config || !Array.isArray(config.channels)) return null;
     const channel = config.channels.find(ch => {
@@ -134,7 +158,6 @@ function getDropId(url, config) {
     return channel.dropId || null;
 }
 
-// Получить все URL, принадлежащие той же группе дропа
 function getDropGroupUrls(dropId, config) {
     if (!dropId || !config || !Array.isArray(config.channels)) return [];
     return config.channels
@@ -145,45 +168,44 @@ function getDropGroupUrls(dropId, config) {
         .map(ch => ch.url);
 }
 
-// Получить суммарное время просмотра для группы дропа
-function getDropGroupWatchedTime(dropId, config, totalWatched) {
+function getDropGroupWatchedTime(dropId, config, watchedMap) {
     const urls = getDropGroupUrls(dropId, config);
     let sum = 0;
+    const map = watchedMap || totalWatched || {};
     for (const url of urls) {
-        sum += (totalWatched[url] || 0);
+        sum += (map[url] || 0);
     }
     return sum;
 }
 
 function ensureStreamWindow(cb) {
-    // Проверяем существующее окно; не создаём about:blank заранее — создаём окно с нужной вкладкой в setStreamTab
     if (streamWindowId !== null) {
         chrome.windows.get(streamWindowId, { populate: false }, (win) => {
             if (chrome.runtime.lastError || !win) {
-                // окно закрыто
                 streamWindowId = null;
+                streamTabId = null;
             }
             cb && cb();
         });
     } else {
-        // еще не создано, просто вызываем callback и позволяем setStreamTab создать окно с нужной вкладкой
         cb && cb();
     }
 }
 
 function setStreamTab(url, cb) {
-    // Убедиться, что у нас есть выделенное окно для стримов и создать/обновить в нём одну вкладку
     ensureStreamWindow(() => {
-    // Если окна ещё нет — создаём новое окно сразу с URL стрима (чтобы не оставлять about:blank)
         if (!streamWindowId) {
             chrome.windows.create({ url, focused: false }, (w) => {
+                if (chrome.runtime.lastError || !w) {
+                    cb && cb();
+                    return;
+                }
                 streamWindowId = w.id;
-                // пытаемся получить id вкладки из созданного окна (первая вкладка)
-                try {
-                    if (w && w.tabs && w.tabs[0]) streamTabId = w.tabs[0].id;
-                } catch (e) {}
-                currentStreamInfo = { url, secondsLeft: 0 };
-                cb && cb();
+                chrome.tabs.query({ windowId: w.id }, (tabs) => {
+                    if (tabs && tabs[0]) streamTabId = tabs[0].id;
+                    currentStreamInfo = { url, secondsLeft: 0 };
+                    cb && cb();
+                });
             });
             return;
         }
@@ -191,20 +213,18 @@ function setStreamTab(url, cb) {
         if (streamTabId !== null) {
             chrome.tabs.get(streamTabId, tab => {
                 if (chrome.runtime.lastError || !tab) {
-                    // вкладка исчезла — создаём новую во вкладке streamWindow и делаем её активной в этом окне
-                    chrome.tabs.create({ windowId: streamWindowId, url, active: true }, tab => {
-                        streamTabId = tab.id;
+                    chrome.tabs.create({ windowId: streamWindowId, url, active: true }, newTab => {
+                        if (newTab) streamTabId = newTab.id;
                         currentStreamInfo = { url, secondsLeft: 0 };
                         cb && cb();
                     });
                 } else {
-                    // если вкладка есть, но в другом окне, перемещаем её, затем обновляем и делаем активной
                     if (tab.windowId !== streamWindowId) {
                         chrome.tabs.move(streamTabId, { windowId: streamWindowId, index: -1 }, () => {
                             chrome.tabs.update(streamTabId, { url, active: true }, () => cb && cb());
                         });
                     } else {
-                        chrome.tabs.update(streamTabId, { url, active: true }, (updatedTab) => {
+                        chrome.tabs.update(streamTabId, { url, active: true }, () => {
                             currentStreamInfo = { url, secondsLeft: 0 };
                             cb && cb();
                         });
@@ -212,9 +232,8 @@ function setStreamTab(url, cb) {
                 }
             });
         } else {
-            // В streamWindow ещё нет отслеживаемой вкладки — создаём её и делаем активной
-            chrome.tabs.create({ windowId: streamWindowId, url, active: true }, tab => {
-                streamTabId = tab.id;
+            chrome.tabs.create({ windowId: streamWindowId, url, active: true }, newTab => {
+                if (newTab) streamTabId = newTab.id;
                 currentStreamInfo = { url, secondsLeft: 0 };
                 cb && cb();
             });
@@ -222,60 +241,62 @@ function setStreamTab(url, cb) {
     });
 }
 
-// Поддерживаем currentStreamInfo в актуальном состоянии при навигации или загрузке вкладки со стримом
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
     if (tabId === streamTabId) {
         try {
-                if (changeInfo.url) {
+            if (changeInfo.url) {
                 currentStreamInfo = { url: changeInfo.url, secondsLeft: currentStreamInfo.secondsLeft || 0 };
                 log(`DEBUG: обновлён URL вкладки со стримом -> ${changeInfo.url}`);
             }
             if (changeInfo.status === 'complete') {
-                // Обновляем информацию, чтобы popup отображал актуальные данные до любых проверок
                 currentStreamInfo = { url: tab.url || currentStreamInfo.url, secondsLeft: currentStreamInfo.secondsLeft || 0 };
                 log(`DEBUG: загрузка вкладки со стримом завершена -> ${currentStreamInfo.url}`);
             }
-        } catch (e) {
-            // игнорируем
-        }
+        } catch (e) {}
     }
 });
 
-function switchToTab(tabId, cb) {
-    chrome.tabs.update(tabId, { active: true }, cb);
-}
-
-function startWatching(config) {
+function startWatching(config, isResume = false) {
+    if (isRunning && !isResume) {
+        log("Просмотр уже запущен.");
+        return;
+    }
     if (!config.channels || !Array.isArray(config.channels) || config.channels.length === 0) {
         log("В конфиге нет каналов!");
         return;
     }
-    // channels теперь НЕ фильтруем по blacklist, чтобы всегда иметь полный список для динамической проверки
-    const mappedChannels = config.channels
-        .map(ch =>
-            typeof ch === "string"
-                ? { url: ch, watchTime: parseTimeToSeconds(config.watchTime), waitBeforeCheck: config.waitBeforeCheck }
-                : {
-                    url: ch.url,
-                    watchTime: parseTimeToSeconds(ch.watchTime || config.watchTime),
-                    waitBeforeCheck: ch.waitBeforeCheck !== undefined ? ch.waitBeforeCheck : config.waitBeforeCheck,
-                    dropId: ch.dropId || null
-                }
-        );
-    const order = Array.isArray(config.groupOrder) ? config.groupOrder : [];
-    channels = applyGroupOrder(mappedChannels, order);
-    searchUrlPart = config.searchUrlPart || "";
-    defaultWatchTime = parseTimeToSeconds(config.watchTime) || 30;
-    defaultWaitBeforeCheck = config.waitBeforeCheck || 5;
+    syncConfigState(config);
     isRunning = true;
-    currentChannelIndex = 0;
+    chrome.storage.local.set({ isRunning: true });
+
+    try {
+        chrome.alarms.create("watchHeartbeat", { periodInMinutes: 1 });
+    } catch (e) {}
+
+    if (!isResume) {
+        currentChannelIndex = 0;
+    }
     log("Запуск просмотра каналов...");
-    startBlacklistAutoUnlock(); // запуск авторазблокировки при старте
+    startBlacklistAutoUnlock();
     watchNextChannel();
 }
 
+chrome.alarms.onAlarm.addListener((alarm) => {
+    if (alarm.name === "watchHeartbeat") {
+        if (isRunning) {
+            chrome.storage.local.get(["isRunning", "userConfig"], (data) => {
+                if (data.isRunning && isRunning) {
+                    if (!watchTimerInterval && !scheduledCheckTimeout && !waitForActiveInterval) {
+                        log("Heartbeat: возобновление цикла просмотра...");
+                        watchNextChannel();
+                    }
+                }
+            });
+        }
+    }
+});
+
 function cleanupBlacklist(config, cb) {
-    // Удаляем из blacklist те каналы, у которых истекло время блокировки (но не "permanent")
     if (!config || typeof config.blacklist !== "object") {
         if (cb) cb(config);
         return;
@@ -287,7 +308,6 @@ function cleanupBlacklist(config, cb) {
             delete config.blacklist[url];
             changed = true;
         }
-        // permanent не удаляем автоматически
     }
     if (changed) {
         chrome.storage.local.set({ userConfig: config }, () => {
@@ -298,71 +318,35 @@ function cleanupBlacklist(config, cb) {
     }
 }
 
-function cleanupBlacklistByWatched(config, totalWatched) {
-    if (!config || typeof config.blacklist !== "object") return false;
-    let changed = false;
-    for (const url in config.blacklist) {
-        // Получаем watchTime для этого канала
-        let channel = (config.channels || []).find(
-            ch => (typeof ch === "string" ? ch : ch.url) === url
-        );
-        let watchTime = 0;
-        if (channel) {
-            watchTime = typeof channel === "string"
-                ? parseTimeToSeconds(config.watchTime)
-                : parseTimeToSeconds(channel.watchTime || config.watchTime);
-        }
-        const watched = totalWatched && totalWatched[url] ? totalWatched[url] : 0;
-        if (watchTime > 0 && watched >= watchTime) {
-            delete config.blacklist[url];
-            changed = true;
-            log(`Канал ${url} автоматически удалён из черного списка (достигнуто время просмотра).`);
-        }
-    }
-    return changed;
-}
-
 function closeStreamTabIfExists(cb) {
-    if (streamTabId !== null) {
-        chrome.tabs.get(streamTabId, tab => {
-            if (!chrome.runtime.lastError && tab) {
-                chrome.tabs.remove(streamTabId, () => {
-                    streamTabId = null;
-                    // если в streamWindow больше нет вкладок — оставляем окно и переводим его на about:blank
-                    try {
-                        chrome.windows.get(streamWindowId, { populate: true }, (w) => {
-                            if (!chrome.runtime.lastError && w && w.tabs && w.tabs.length === 0) {
-                                // оставляем окно, но сбрасываем содержимое на about:blank
-                                chrome.windows.update(streamWindowId, { focused: false }, () => {});
-                            }
-                        });
-                    } catch (e) {}
-                    cb && cb();
-                });
-            } else {
-                streamTabId = null;
-                cb && cb();
-            }
+    if (streamWindowId !== null) {
+        chrome.windows.remove(streamWindowId, () => {
+            if (chrome.runtime.lastError) {}
+            streamWindowId = null;
+            streamTabId = null;
+            cb && cb();
+        });
+    } else if (streamTabId !== null) {
+        chrome.tabs.remove(streamTabId, () => {
+            if (chrome.runtime.lastError) {}
+            streamTabId = null;
+            cb && cb();
         });
     } else {
         cb && cb();
     }
 }
 
-let waitForActiveInterval = null;
-
 function waitForActiveChannels() {
-    if (waitForActiveInterval) return; // уже ждем
+    if (waitForActiveInterval) return;
     log("Ожидание появления активных каналов...");
     waitForActiveInterval = setInterval(() => {
         chrome.storage.local.get(["userConfig", "totalWatched"], (data) => {
             let config = data.userConfig;
             if (!config || !Array.isArray(config.channels) || config.channels.length === 0) return;
-            if (typeof config.blacklist !== "object") config.blacklist = {};
-            const totalWatched = data.totalWatched || {};
-            // Очищаем blacklist по времени блокировки
+            if (typeof config.blacklist !== "object" || Array.isArray(config.blacklist)) config.blacklist = {};
             cleanupBlacklist(config, (cleanedConfig) => {
-                const blacklist = cleanedConfig.blacklist;
+                const blacklist = cleanedConfig.blacklist || {};
                 let hasActive = false;
                 for (const ch of config.channels) {
                     const url = typeof ch === "string" ? ch : ch.url;
@@ -379,7 +363,7 @@ function waitForActiveChannels() {
                 }
             });
         });
-    }, 5000); // проверяем каждые 5 секунд
+    }, 5000);
 }
 
 function watchNextChannel() {
@@ -390,12 +374,11 @@ function watchNextChannel() {
     }
 
     chrome.storage.local.get(["userConfig", "totalWatched"], (data) => {
-        let config = data.userConfig;
-        if (typeof config?.blacklist !== "object") config.blacklist = {};
-        const totalWatched = data.totalWatched || {};
+        let config = data.userConfig || {};
+        if (typeof config.blacklist !== "object" || Array.isArray(config.blacklist)) config.blacklist = {};
 
         cleanupBlacklist(config, (cleanedConfig) => {
-            const blacklist = cleanedConfig.blacklist;
+            const blacklist = cleanedConfig.blacklist || {};
             let checked = 0;
             let foundActive = false;
 
@@ -418,7 +401,6 @@ function watchNextChannel() {
                 return;
             }
 
-            // Если был режим ожидания, выключаем его
             if (waitForActiveInterval) {
                 clearInterval(waitForActiveInterval);
                 waitForActiveInterval = null;
@@ -430,7 +412,6 @@ function watchNextChannel() {
             setStreamTab(url, () => {
                 const waitSec = waitBeforeCheck !== undefined ? waitBeforeCheck : defaultWaitBeforeCheck;
                 log(`Ждем ${waitSec} сек. перед проверкой ссылки...`);
-                // очищаем любые ранее запланированные проверки
                 if (scheduledCheckTimeout) { clearTimeout(scheduledCheckTimeout); scheduledCheckTimeout = null; }
                 scheduledCheckTimeout = setTimeout(() => {
                     scheduledCheckTimeout = null;
@@ -443,140 +424,96 @@ function watchNextChannel() {
 
 function checkChannel(tabId, url, watchTime, attempt = 1, maxAttempts = 3) {
     if (!isRunning) return;
-    if (attempt === 1) {
-        // Сохраняем текущую активную вкладку пользователя и переключаемся на стрим только один раз
-        chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-            userPrevTabId = tabs[0] ? tabs[0].id : null;
-            switchToTab(tabId, () => {
-                if (pendingDoFindTimeout) { clearTimeout(pendingDoFindTimeout); pendingDoFindTimeout = null; }
-                pendingDoFindTimeout = setTimeout(() => {
-                    pendingDoFindTimeout = null;
-                    doFindLink(tabId, url, watchTime, attempt, maxAttempts);
-                }, 1500);
-            });
-        });
-    } else {
-        // Уже на вкладке со стримом, просто пробуем снова
-        if (pendingDoFindTimeout) { clearTimeout(pendingDoFindTimeout); pendingDoFindTimeout = null; }
-        pendingDoFindTimeout = setTimeout(() => {
-            pendingDoFindTimeout = null;
-            doFindLink(tabId, url, watchTime, attempt, maxAttempts);
-        }, 1000);
-    }
+    if (pendingDoFindTimeout) { clearTimeout(pendingDoFindTimeout); pendingDoFindTimeout = null; }
+    const delay = attempt === 1 ? 1500 : 2500;
+    pendingDoFindTimeout = setTimeout(() => {
+        pendingDoFindTimeout = null;
+        doFindLink(tabId, url, watchTime, attempt, maxAttempts);
+    }, delay);
 }
 
-// Заменяем вызов chrome.tabs.sendMessage на safeSendMessage в doFindLink
 function doFindLink(tabId, url, watchTime, attempt, maxAttempts, onResult) {
     log(`Проверка наличия ссылки "${searchUrlPart}"... (попытка ${attempt})`);
-        safeSendMessage(tabId, { action: "findLink", text: searchUrlPart }, (response) => {
-            // Логируем сырой ответ для диагностики
-            log(`DEBUG: doFindLink raw response -> ${response ? JSON.stringify(response) : 'undefined'}`);
+    safeSendMessage(tabId, { action: "findLink", text: searchUrlPart }, (response) => {
+        let pageMatches = true;
+        let debugExpected = null;
+        let debugActual = null;
+        if (response) {
+            try {
+                const expected = new URL(url);
+                const expHost = (expected.host || '').toLowerCase();
+                const normalize = (p) => (p || '').replace(/^\/+|\/+$/g, '').toLowerCase();
+                const expFirst = normalize(expected.pathname).split('/')[0] || '';
 
-            // Вычисляем pageMatches заранее, чтобы и onResult получил корректную информацию
-            let pageMatches = true;
-            let debugExpected = null;
-            let debugActual = null;
-            if (response) {
-                try {
-                    const expected = new URL(url);
-                    const expHost = (expected.host || '').toLowerCase();
-                    const normalize = (p) => (p || '').replace(/^\/+|\/+$/g, '').toLowerCase();
-                    const expFirst = normalize(expected.pathname).split('/')[0] || '';
-
-                    let actualHost = '';
-                    let actualPath = '';
-                    if (response.pageHost) {
-                        actualHost = String(response.pageHost).toLowerCase();
-                    } else if (response.pageUrl) {
-                        try { actualHost = new URL(response.pageUrl).host.toLowerCase(); } catch (e) { actualHost = ''; }
-                    }
-                    if (response.pagePathname) {
-                        actualPath = String(response.pagePathname);
-                    } else if (response.pageUrl) {
-                        try { actualPath = new URL(response.pageUrl).pathname; } catch (e) { actualPath = ''; }
-                    }
-                    const actFirst = normalize(actualPath).split('/')[0] || '';
-
-                    debugExpected = { expHost, expFirst };
-                    debugActual = { actualHost, actFirst };
-
-                    if (expHost !== (actualHost || '').toLowerCase() || (expFirst && expFirst !== actFirst)) {
-                        pageMatches = false;
-                    }
-                } catch (e) {
-                    log(`DEBUG: doFindLink parse error -> ${e}`);
-                    pageMatches = true;
+                let actualHost = '';
+                let actualPath = '';
+                if (response.pageHost) {
+                    actualHost = String(response.pageHost).toLowerCase();
+                } else if (response.pageUrl) {
+                    try { actualHost = new URL(response.pageUrl).host.toLowerCase(); } catch (e) { actualHost = ''; }
                 }
-            }
+                if (response.pagePathname) {
+                    actualPath = String(response.pagePathname);
+                } else if (response.pageUrl) {
+                    try { actualPath = new URL(response.pageUrl).pathname; } catch (e) { actualPath = ''; }
+                }
+                const actFirst = normalize(actualPath).split('/')[0] || '';
 
-            // Если вызван onResult (периодический чек) — отдадим расширенный ответ и вернёмся
-            if (typeof onResult === "function") {
-                const augmented = Object.assign({}, response || {}, { pageMatches, debugExpected, debugActual });
-                log(`DEBUG: doFindLink onResult augmented -> ${JSON.stringify(augmented)}`);
-                onResult(augmented);
+                debugExpected = { expHost, expFirst };
+                debugActual = { actualHost, actFirst };
+
+                if (expHost !== (actualHost || '').toLowerCase() || (expFirst && expFirst !== actFirst)) {
+                    pageMatches = false;
+                }
+            } catch (e) {
+                pageMatches = true;
+            }
+        }
+
+        if (typeof onResult === "function") {
+            const augmented = Object.assign({}, response || {}, { pageMatches, debugExpected, debugActual });
+            onResult(augmented);
+            return;
+        }
+
+        if (!response) {
+            log("Контент-скрипт не ответил.");
+            if (attempt < maxAttempts) {
+                checkChannel(tabId, url, watchTime, attempt + 1, maxAttempts);
                 return;
             }
+            addToBlacklist(url);
+            nextChannel();
+            return;
+        }
 
-            if (!response) {
-                log("Ошибка при поиске ссылки (контент-скрипт не найден).");
-                if (attempt >= maxAttempts && userPrevTabId && userPrevTabId !== tabId) {
-                    switchToTab(userPrevTabId);
-                }
-                if (attempt >= maxAttempts) {
-                    addToBlacklist(url);
-                }
-                nextChannel();
+        if (response && response.streamerOnline === false) {
+            log(`Стример ОФЛАЙН на ${url}!`);
+            if (attempt < maxAttempts) {
+                checkChannel(tabId, url, watchTime, attempt + 1, maxAttempts);
                 return;
             }
+            addToBlacklist(url);
+            nextChannel();
+            return;
+        }
 
-            log(`DEBUG: doFindLink check -> found=${response.found} streamerOnline=${response.streamerOnline} pageMatches=${pageMatches} expected=${JSON.stringify(debugExpected)} actual=${JSON.stringify(debugActual)}`);
-
-            // Проверяем статус онлайна ПЕРВЫМ
-            if (response && response.streamerOnline === false) {
-                log(`ОШИБКА: Стример ОФЛАЙН на ${url}! Проверка не может продолжиться.`);
-                if (attempt < maxAttempts) {
-                    log(`Повторная попытка проверки офлайн-канала... (попытка ${attempt + 1})`);
-                    checkChannel(tabId, url, watchTime, attempt + 1, maxAttempts);
-                    return;
-                }
-                if (userPrevTabId && userPrevTabId !== tabId) {
-                    switchToTab(userPrevTabId);
-                }
+        if (response && response.found && pageMatches) {
+            log(`Ссылка найдена на ${url}. Начинаем отсчет времени.`);
+            startWatchTimer(tabId, url, watchTime);
+        } else {
+            if (attempt < maxAttempts) {
+                log(`Ссылка не найдена, повторная попытка... (${attempt + 1}/${maxAttempts})`);
+                checkChannel(tabId, url, watchTime, attempt + 1, maxAttempts);
+            } else {
+                log(`Ссылка не найдена на ${url} после ${maxAttempts} попыток. Канал отправлен в ЧС.`);
                 addToBlacklist(url);
                 nextChannel();
-                return;
             }
-
-            if (response && response.found && pageMatches) {
-                log(`Ссылка найдена на ${url}. Остаемся на странице ${watchTime} сек.`);
-                if (userPrevTabId && userPrevTabId !== tabId) {
-                    switchToTab(userPrevTabId);
-                }
-                startWatchTimer(tabId, url, watchTime);
-            } else {
-                if (response && response.found && !pageMatches) {
-                    log(`Найденная ссылка относится к другой странице (${response.pageUrl}). Ожидается ${url}. Считаем попытку неудачной.`);
-                    log(`DEBUG: mismatch expected=${JSON.stringify(debugExpected)} actual=${JSON.stringify(debugActual)}`);
-                } else if (!response.found) {
-                    log(`Ссылка не найдена (response.found === false).`);
-                }
-
-                if (attempt < maxAttempts) {
-                    log(`Ссылка не найдена или неправильный стрим, повторная попытка... (попытка ${attempt + 1})`);
-                    checkChannel(tabId, url, watchTime, attempt + 1, maxAttempts);
-                } else {
-                    log(`Ссылка не найдена на ${url} после ${maxAttempts} попыток или мы на другом стриме. Канал будет добавлен в черный список. Переходим к следующему каналу.`);
-                    if (userPrevTabId && userPrevTabId !== tabId) {
-                        switchToTab(userPrevTabId);
-                    }
-                    addToBlacklist(url);
-                    nextChannel();
-                }
-            }
-        });
+        }
+    });
 }
 
-// Модифицированная функция addToBlacklist с поддержкой customDurationSeconds и групп дропов
 function addToBlacklist(url, customDurationSeconds) {
     chrome.storage.local.get(["userConfig", "totalWatched"], (data) => {
         let config = data.userConfig;
@@ -586,7 +523,6 @@ function addToBlacklist(url, customDurationSeconds) {
         const dropId = getDropId(url, config);
         const groupUrls = dropId ? getDropGroupUrls(dropId, config) : [url];
         
-        // Получаем watchTime для этого канала
         let channel = (config.channels || []).find(
             ch => (typeof ch === "string" ? ch : ch.url) === url
         );
@@ -597,77 +533,38 @@ function addToBlacklist(url, customDurationSeconds) {
                 : parseTimeToSeconds(channel.watchTime || config.watchTime);
         }
         
-        // Если канал в группе — проверяем суммарное время просмотра группы
         const totalGroupWatched = dropId ? getDropGroupWatchedTime(dropId, config, data.totalWatched || {}) : (totalWatched[url] || 0);
-        
         const tempBlacklistSeconds = resolveTempBlacklistSeconds(config, customDurationSeconds);
         
-        // Если уже просмотрено достаточно — блокируем ВСЮ ГРУППУ как permanent
         if (watchTime > 0 && totalGroupWatched >= watchTime) {
             for (const groupUrl of groupUrls) {
                 config.blacklist[groupUrl] = "permanent";
             }
             chrome.storage.local.set({ userConfig: config }, () => {
                 if (dropId) {
-                    log(`Группа дропа '${dropId}' (${groupUrls.join(', ')}) навсегда добавлена в черный список (достигнуто время просмотра ${totalGroupWatched}/${watchTime}с).`);
+                    log(`Группа дропа '${dropId}' навсегда добавлена в черный список (достигнуто время ${totalGroupWatched}/${watchTime}с).`);
                 } else {
                     log(`Канал ${url} навсегда добавлен в черный список (достигнуто время просмотра).`);
                 }
             });
         } else {
-            // Ставим время разблокировки ТОЛЬКО ДЛЯ ЭТОГО КАНАЛА (не всей группы) — индивидуально
             const until = Date.now() + tempBlacklistSeconds * 1000;
             config.blacklist[url] = until;
             chrome.storage.local.set({ userConfig: config }, () => {
-                log(`Канал ${url} добавлен в черный список до ${new Date(until).toLocaleTimeString()} (блокировка на ${Math.round(tempBlacklistSeconds/60)} мин).`);
+                log(`Канал ${url} добавлен в черный список до ${new Date(until).toLocaleTimeString()} (${Math.round(tempBlacklistSeconds/60)} мин).`);
             });
         }
     });
 }
 
-function autoRemoveFromBlacklistIfWatchedEnough(url, config) {
-    // Получаем watchTime для этого канала
-    let channel = (config.channels || []).find(
-        ch => (typeof ch === "string" ? ch : ch.url) === url
-    );
-    let watchTime = 0;
-    if (channel) {
-        watchTime = typeof channel === "string"
-            ? parseTimeToSeconds(config.watchTime)
-            : parseTimeToSeconds(channel.watchTime || config.watchTime);
-    }
-    chrome.storage.local.get("totalWatched", (data) => {
-        const watched = data.totalWatched && data.totalWatched[url] ? data.totalWatched[url] : 0;
-        if (watchTime > 0 && watched >= watchTime) {
-            if (userPrevTabId && userPrevTabId !== tabId) {
-                switchToTab(userPrevTabId);
-            }
-            startWatchTimer(tabId, url, watchTime);
-        } else if (attempt < maxAttempts) {
-            log(`Ссылка не найдена, повторная попытка...`);
-            checkChannel(tabId, url, watchTime, attempt + 1, maxAttempts);
-        } else {
-            log(`Ссылка не найдена на ${url} после ${maxAttempts} попыток. Канал будет добавлен в черный список. Переходим к следующему каналу.`);
-            // После всех попыток возвращаем пользователя на его вкладку
-            if (userPrevTabId && userPrevTabId !== tabId) {
-                switchToTab(userPrevTabId);
-            }
-            addToBlacklist(url);
-            nextChannel();
-        }
-    });
-}
-
 function startWatchTimer(tabId, url, watchTime) {
-    // Инвалидируем предыдущий запуск и увеличиваем runId для этой сессии просмотра
     const myRunId = ++currentRunId;
     
-    chrome.storage.local.get("userConfig", (data) => {
-        let config = data.userConfig;
+    chrome.storage.local.get(["userConfig", "totalWatched"], (data) => {
+        let config = data.userConfig || {};
+        if (data.totalWatched) totalWatched = data.totalWatched;
         const dropId = getDropId(url, config);
         
-        // Вычисляем оставшиеся секунды с учётом уже просмотренного времени
-        // Если канал в группе — используем суммарное время группы
         const alreadyWatched = dropId 
             ? getDropGroupWatchedTime(dropId, config, totalWatched)
             : (totalWatched[url] || 0);
@@ -675,292 +572,108 @@ function startWatchTimer(tabId, url, watchTime) {
         let secondsLeft = Math.max(0, watchTime - alreadyWatched);
         currentStreamInfo = { url, secondsLeft };
         log(`DEBUG: startWatchTimer for ${url}${dropId ? ` (group: ${dropId})` : ''}, watchTime=${watchTime}, alreadyWatched=${alreadyWatched}, runId=${myRunId}`);
+        
         let timerStopped = false;
-        let linkCheckInterval = null;
-        let checkIntervalMs = 2 * 60 * 1000; // по умолчанию 2 минуты
-
+        let checkIntervalMs = 2 * 60 * 1000;
         if (config && typeof config.checkIntervalMinutes === "number" && config.checkIntervalMinutes > 0) {
             checkIntervalMs = config.checkIntervalMinutes * 60 * 1000;
         }
 
-        // Очищаем предыдущие таймеры (если были) чтобы избежать параллельных интервалов
         if (watchTimerInterval) { clearInterval(watchTimerInterval); watchTimerInterval = null; }
         if (watchLinkCheckInterval) { clearInterval(watchLinkCheckInterval); watchLinkCheckInterval = null; }
 
-        // Запускаем основной таймер просмотра (каждую секунду)
+        let saveCounter = 0;
+
         watchTimerInterval = setInterval(() => {
-            // Защитная проверка: если runId изменился, этот таймер устарел — останавливаем его
-            if (myRunId !== currentRunId) {
-                if (watchTimerInterval) { clearInterval(watchTimerInterval); watchTimerInterval = null; }
-                if (watchLinkCheckInterval) { clearInterval(watchLinkCheckInterval); watchLinkCheckInterval = null; }
-                return;
-            }
-            if (!isRunning || timerStopped) {
+            if (myRunId !== currentRunId || !isRunning || timerStopped) {
                 if (watchTimerInterval) { clearInterval(watchTimerInterval); watchTimerInterval = null; }
                 if (watchLinkCheckInterval) { clearInterval(watchLinkCheckInterval); watchLinkCheckInterval = null; }
                 currentStreamInfo = { url: null, secondsLeft: 0 };
                 return;
             }
 
-            // Получаем текущий URL вкладки и выполняем проверку внутри callback, чтобы избежать демонтирования try/catch вокруг асинхронного кода
-            try {
-                chrome.tabs.get(streamTabId, (tab) => {
-                    try {
-                        const actualUrl = tab && tab.url ? tab.url : '';
-                        let mismatch = false;
-                        try {
-                            const expectedObj = new URL(url);
-                            const normalize = (p) => (p || '').replace(/^\/+|\/+$/g, '').toLowerCase();
-                            const expFirst = normalize(expectedObj.pathname).split('/')[0] || '';
-                            let actFirst = '';
-                            let actHost = '';
-                            if (actualUrl) {
-                                try {
-                                    const actualObj = new URL(actualUrl, expectedObj.origin);
-                                    actFirst = normalize(actualObj.pathname).split('/')[0] || '';
-                                    actHost = (actualObj.host || '').toLowerCase();
-                                } catch (e) {
-                                    actFirst = '';
-                                    actHost = '';
-                                }
-                            }
-                            const expHost = (expectedObj.host || '').toLowerCase();
-                            // считаем mismatch, если host или первый сегмент пути не совпадают
-                            if (expHost !== actHost || (expFirst && expFirst !== actFirst)) {
-                                mismatch = true;
-                            }
-                        } catch (e) {
-                            // парсинг упал — не блокируем
-                            mismatch = false;
-                        }
+            secondsLeft--;
+            currentStreamInfo = { url, secondsLeft };
+            if (!totalWatched[url]) totalWatched[url] = 0;
+            totalWatched[url]++;
 
-                        if (mismatch) {
-                            log(`DEBUG: tab URL mismatch during watch for ${url} -> actual=${actualUrl}. Stopping watch.`);
-                            if (watchTimerInterval) { clearInterval(watchTimerInterval); watchTimerInterval = null; }
-                            if (watchLinkCheckInterval) { clearInterval(watchLinkCheckInterval); watchLinkCheckInterval = null; }
-                            timerStopped = true;
-                            currentStreamInfo = { url: null, secondsLeft: 0 };
-                            // Добавляем канал в ЧС на время просмотра
-                            addToBlacklist(url, watchTime);
-                            // невалидируем любые другие таймеры перед переходом к следующему, чтобы избежать гонок
-                            currentRunId++;
-                            nextChannel();
-                            return;
-                        }
-
-                        // Если совпадает — продолжаем инкремент
-                        secondsLeft--;
-                        currentStreamInfo = { url, secondsLeft };
-                        if (!totalWatched[url]) totalWatched[url] = 0;
-                        totalWatched[url]++;
-                        
-                        // Вычисляем суммарное время группы (если канал в группе)
-                        const currentGroupWatched = dropId 
-                            ? getDropGroupWatchedTime(dropId, config, totalWatched)
-                            : totalWatched[url];
-                        
-                        // диагностический лог для каждого увеличения
-                        log(`DEBUG: incremented watched for ${url}${dropId ? ` (group ${dropId}: ${currentGroupWatched}s)` : ''} -> ${totalWatched[url]}s (secondsLeft=${secondsLeft}) runId=${myRunId}`);
-                        
-                        // Сохраняем totalWatched немедленно
-                        chrome.storage.local.set({ totalWatched }, () => {
-                            // После сохранения проверяем, достигли ли мы установленного времени просмотра для группы
-                            if (watchTime > 0 && currentGroupWatched >= watchTime) {
-                                if (config && typeof config.blacklist === 'object') {
-                                    // Блокируем все каналы группы как permanent
-                                    const groupUrls = dropId ? getDropGroupUrls(dropId, config) : [url];
-                                    let needUpdate = false;
-                                    for (const groupUrl of groupUrls) {
-                                        if (config.blacklist[groupUrl] !== 'permanent') {
-                                            config.blacklist[groupUrl] = 'permanent';
-                                            needUpdate = true;
-                                        }
-                                    }
-                                    if (needUpdate) {
-                                        chrome.storage.local.set({ userConfig: config }, () => {
-                                            if (dropId) {
-                                                log(`Группа дропа '${dropId}' (${groupUrls.join(', ')}) навсегда добавлена в черный список (достигнуто время просмотра ${currentGroupWatched}/${watchTime}с).`);
-                                            } else {
-                                                log(`Канал ${url} навсегда добавлен в черный список (достигнуто время просмотра).`);
-                                            }
-                                            if (watchTimerInterval) { clearInterval(watchTimerInterval); watchTimerInterval = null; }
-                                            if (watchLinkCheckInterval) { clearInterval(watchLinkCheckInterval); watchLinkCheckInterval = null; }
-                                            timerStopped = true;
-                                            currentStreamInfo = { url: null, secondsLeft: 0 };
-                                            log(`Время на ${url} истекло (лимит достигнут).`);
-                                            nextChannel();
-                                        });
-                                        return;
-                                    }
-                                }
-                            }
-                            // Если не достигнуто или уже обработано, если secondsLeft достиг нуля, то переходим к следующему
-                            if (secondsLeft <= 0) {
-                                if (watchTimerInterval) { clearInterval(watchTimerInterval); watchTimerInterval = null; }
-                                if (watchLinkCheckInterval) { clearInterval(watchLinkCheckInterval); watchLinkCheckInterval = null; }
-                                timerStopped = true;
-                                currentStreamInfo = { url: null, secondsLeft: 0 };
-                                log(`Время на ${url} истекло.`);
-                                nextChannel();
-                            }
-                        });
-                    } catch (e) {
-                        // fallback внутри callback: если что-то упало при обработке tab — выполним инкремент без проверки вкладки
-                        secondsLeft--;
-                        currentStreamInfo = { url, secondsLeft };
-                        if (!totalWatched[url]) totalWatched[url] = 0;
-                        totalWatched[url]++;
-                        
-                        const currentGroupWatched = dropId 
-                            ? getDropGroupWatchedTime(dropId, config, totalWatched)
-                            : totalWatched[url];
-                        
-                        log(`DEBUG: incremented watched for ${url}${dropId ? ` (group ${dropId}: ${currentGroupWatched}s)` : ''} -> ${totalWatched[url]}s (secondsLeft=${secondsLeft}) runId=${myRunId} (fallback)`);
-                        chrome.storage.local.set({ totalWatched }, () => {
-                            if (watchTime > 0 && currentGroupWatched >= watchTime) {
-                                if (config && typeof config.blacklist === 'object') {
-                                    const groupUrls = dropId ? getDropGroupUrls(dropId, config) : [url];
-                                    let needUpdate = false;
-                                    for (const groupUrl of groupUrls) {
-                                        if (config.blacklist[groupUrl] !== 'permanent') {
-                                            config.blacklist[groupUrl] = 'permanent';
-                                            needUpdate = true;
-                                        }
-                                    }
-                                    if (needUpdate) {
-                                        chrome.storage.local.set({ userConfig: config }, () => {
-                                            if (dropId) {
-                                                log(`Группа дропа '${dropId}' (${groupUrls.join(', ')}) навсегда добавлена в черный список (достигнуто время просмотра ${currentGroupWatched}/${watchTime}с).`);
-                                            } else {
-                                                log(`Канал ${url} навсегда добавлен в черный список (достигнуто время просмотра).`);
-                                            }
-                                            if (watchTimerInterval) { clearInterval(watchTimerInterval); watchTimerInterval = null; }
-                                            if (watchLinkCheckInterval) { clearInterval(watchLinkCheckInterval); watchLinkCheckInterval = null; }
-                                            timerStopped = true;
-                                            currentStreamInfo = { url: null, secondsLeft: 0 };
-                                            log(`Время на ${url} истекло (лимит достигнут).`);
-                                            nextChannel();
-                                        });
-                                        return;
-                                    }
-                                }
-                            }
-                            if (secondsLeft <= 0) {
-                                if (watchTimerInterval) { clearInterval(watchTimerInterval); watchTimerInterval = null; }
-                                if (watchLinkCheckInterval) { clearInterval(watchLinkCheckInterval); watchLinkCheckInterval = null; }
-                                timerStopped = true;
-                                currentStreamInfo = { url: null, secondsLeft: 0 };
-                                log(`Время на ${url} истекло.`);
-                                nextChannel();
-                            }
-                        });
-                    }
-                });
-            } catch (e) {
-                // если chrome.tabs.get вызов упал синхронно (маловероятно) — просто выполним инкремент как fallback
-                secondsLeft--;
-                currentStreamInfo = { url, secondsLeft };
-                if (!totalWatched[url]) totalWatched[url] = 0;
-                totalWatched[url]++;
-                
+            chrome.storage.local.get("userConfig", (cfgData) => {
+                const liveConfig = cfgData.userConfig || config;
                 const currentGroupWatched = dropId 
-                    ? getDropGroupWatchedTime(dropId, config, totalWatched)
+                    ? getDropGroupWatchedTime(dropId, liveConfig, totalWatched)
                     : totalWatched[url];
-                
-                log(`DEBUG: incremented watched for ${url}${dropId ? ` (group ${dropId}: ${currentGroupWatched}s)` : ''} -> ${totalWatched[url]}s (secondsLeft=${secondsLeft}) runId=${myRunId} (sync-fallback)`);
-                chrome.storage.local.set({ totalWatched }, () => {
-                    if (watchTime > 0 && currentGroupWatched >= watchTime) {
-                        if (config && typeof config.blacklist === 'object') {
-                            const groupUrls = dropId ? getDropGroupUrls(dropId, config) : [url];
-                            let needUpdate = false;
-                            for (const groupUrl of groupUrls) {
-                                if (config.blacklist[groupUrl] !== 'permanent') {
-                                    config.blacklist[groupUrl] = 'permanent';
-                                    needUpdate = true;
-                                }
-                            }
-                            if (needUpdate) {
-                                chrome.storage.local.set({ userConfig: config }, () => {
-                                    if (dropId) {
-                                        log(`Группа дропа '${dropId}' (${groupUrls.join(', ')}) навсегда добавлена в черный список (достигнуто время просмотра ${currentGroupWatched}/${watchTime}с).`);
-                                    } else {
-                                        log(`Канал ${url} навсегда добавлен в черный список (достигнуто время просмотра).`);
-                                    }
-                                    if (watchTimerInterval) { clearInterval(watchTimerInterval); watchTimerInterval = null; }
-                                    if (watchLinkCheckInterval) { clearInterval(watchLinkCheckInterval); watchLinkCheckInterval = null; }
-                                    timerStopped = true;
-                                    currentStreamInfo = { url: null, secondsLeft: 0 };
-                                    log(`Время на ${url} истекло (лимит достигнут).`);
-                                    nextChannel();
-                                });
-                                return;
+
+                saveCounter++;
+                const isFinished = (watchTime > 0 && currentGroupWatched >= watchTime) || secondsLeft <= 0;
+                if (saveCounter % 10 === 0 || isFinished) {
+                    chrome.storage.local.set({ totalWatched });
+                }
+
+                if (watchTime > 0 && currentGroupWatched >= watchTime) {
+                    if (liveConfig && typeof liveConfig.blacklist === 'object' && !Array.isArray(liveConfig.blacklist)) {
+                        const groupUrls = dropId ? getDropGroupUrls(dropId, liveConfig) : [url];
+                        let needUpdate = false;
+                        for (const groupUrl of groupUrls) {
+                            if (liveConfig.blacklist[groupUrl] !== 'permanent') {
+                                liveConfig.blacklist[groupUrl] = 'permanent';
+                                needUpdate = true;
                             }
                         }
+                        if (needUpdate) {
+                            chrome.storage.local.set({ userConfig: liveConfig });
+                        }
                     }
-                    if (secondsLeft <= 0) {
-                        if (watchTimerInterval) { clearInterval(watchTimerInterval); watchTimerInterval = null; }
-                        if (watchLinkCheckInterval) { clearInterval(watchLinkCheckInterval); watchLinkCheckInterval = null; }
-                        timerStopped = true;
-                        currentStreamInfo = { url: null, secondsLeft: 0 };
-                        log(`Время на ${url} истекло.`);
-                        nextChannel();
-                    }
-                });
-            }
+                    if (watchTimerInterval) { clearInterval(watchTimerInterval); watchTimerInterval = null; }
+                    if (watchLinkCheckInterval) { clearInterval(watchLinkCheckInterval); watchLinkCheckInterval = null; }
+                    timerStopped = true;
+                    currentStreamInfo = { url: null, secondsLeft: 0 };
+                    log(`Время на ${url} истекло (лимит группы/канала достигнут).`);
+                    nextChannel();
+                    return;
+                }
+
+                if (secondsLeft <= 0) {
+                    if (watchTimerInterval) { clearInterval(watchTimerInterval); watchTimerInterval = null; }
+                    if (watchLinkCheckInterval) { clearInterval(watchLinkCheckInterval); watchLinkCheckInterval = null; }
+                    timerStopped = true;
+                    currentStreamInfo = { url: null, secondsLeft: 0 };
+                    log(`Время на ${url} истекло.`);
+                    nextChannel();
+                }
+            });
         }, 1000);
 
-        // Запускаем периодическую проверку наличия ссылки
+        let failedCheckCount = 0;
         watchLinkCheckInterval = setInterval(() => {
-            // защита: остановить, если выполнение недействительно
-            if (myRunId !== currentRunId) {
+            if (myRunId !== currentRunId || !isRunning || timerStopped) {
                 if (watchLinkCheckInterval) { clearInterval(watchLinkCheckInterval); watchLinkCheckInterval = null; }
                 return;
             }
-            if (!isRunning || timerStopped) {
-                if (watchLinkCheckInterval) { clearInterval(watchLinkCheckInterval); watchLinkCheckInterval = null; }
-                return;
-            }
-            // Получаем searchUrlPart из конфига
-            chrome.storage.local.get("userConfig", (data) => {
-                let config = data.userConfig;
-                let searchUrlPart = config && config.searchUrlPart ? config.searchUrlPart : "";
-                // Используем doFindLink для проверки
+
+            chrome.storage.local.get("userConfig", (dataCfg) => {
+                let liveCfg = dataCfg.userConfig || config;
                 doFindLink(tabId, url, watchTime, 1, 1, (response) => {
-                    // now response is augmented with pageMatches/debugExpected/debugActual when available
-                    log(`DEBUG: periodic doFindLink -> ${response ? JSON.stringify(response) : 'undefined'}`);
-                    
-                    // КРИТИЧНО: проверяем статус онлайна стримера
                     const isOnline = response && response.streamerOnline !== false;
                     const linkFound = response && response.found;
                     const pageMatchesOk = response && response.pageMatches !== false;
-                    
-                    const tempSeconds = resolveTempBlacklistSeconds(config);
 
-                    if (!isOnline) {
-                        log(`ОШИБКА: Стример ОФЛАЙН! Досрочно завершаем просмотр ${url}.`);
+                    if (!isOnline || !linkFound || !pageMatchesOk) {
+                        failedCheckCount++;
+                        log(`Периодическая проверка не удалась (${failedCheckCount}/3) на ${url}`);
+                        if (failedCheckCount < 3) return;
+
+                        log(`Стример оффлайн или ссылка пропала на ${url}. Завершаем просмотр.`);
                         if (watchTimerInterval) { clearInterval(watchTimerInterval); watchTimerInterval = null; }
                         if (watchLinkCheckInterval) { clearInterval(watchLinkCheckInterval); watchLinkCheckInterval = null; }
                         timerStopped = true;
                         currentStreamInfo = { url: null, secondsLeft: 0 };
-                        // Добавляем канал в ЧС на время просмотра (стример был офлайн)
+
+                        const tempSeconds = resolveTempBlacklistSeconds(liveCfg);
                         addToBlacklist(url, tempSeconds);
-                        // невалидируем любые другие таймеры перед переходом к следующему, чтобы избежать гонок
                         currentRunId++;
                         nextChannel();
-                        return;
-                    }
-                    
-                    if (!linkFound || !pageMatchesOk) {
-                        log(`Ссылка '${searchUrlPart}' пропала или мы на другом стриме (${!pageMatchesOk ? 'mismatch' : 'not found'}). Досрочно завершаем просмотр ${url}.`);
-                        if (watchTimerInterval) { clearInterval(watchTimerInterval); watchTimerInterval = null; }
-                        if (watchLinkCheckInterval) { clearInterval(watchLinkCheckInterval); watchLinkCheckInterval = null; }
-                        timerStopped = true;
-                        currentStreamInfo = { url: null, secondsLeft: 0 };
-                        // Добавляем канал в ЧС на время просмотра
-                        addToBlacklist(url, tempSeconds);
-                        // невалидируем любые другие таймеры перед переходом к следующему, чтобы избежать гонок
-                        currentRunId++;
-                        nextChannel();
+                    } else {
+                        failedCheckCount = 0;
                     }
                 });
             });
@@ -969,20 +682,24 @@ function startWatchTimer(tabId, url, watchTime) {
 }
 
 function nextChannel() {
-    // невалидируем текущий запуск, чтобы любые устаревшие таймеры немедленно завершились
     currentRunId++;
-    if (timerInterval) clearInterval(timerInterval);
-    log(`DEBUG: nextChannel called (from index ${currentChannelIndex}) runId=${currentRunId}`);
+    if (timerInterval) { clearInterval(timerInterval); timerInterval = null; }
+    if (watchTimerInterval) { clearInterval(watchTimerInterval); watchTimerInterval = null; }
+    if (watchLinkCheckInterval) { clearInterval(watchLinkCheckInterval); watchLinkCheckInterval = null; }
+    if (scheduledCheckTimeout) { clearTimeout(scheduledCheckTimeout); scheduledCheckTimeout = null; }
+    if (pendingDoFindTimeout) { clearTimeout(pendingDoFindTimeout); pendingDoFindTimeout = null; }
+    
     currentChannelIndex++;
-    log(`DEBUG: new currentChannelIndex = ${currentChannelIndex}`);
     if (isRunning) watchNextChannel();
 }
 
 function stopWatching() {
-    // Остановить весь процесс просмотра: таймеры, планировщики и состояние
     isRunning = false;
-    // невалидируем текущий запуск — это заставит устаревшие таймеры корректно завершиться
+    chrome.storage.local.set({ isRunning: false });
     currentRunId++;
+    try {
+        chrome.alarms.clear("watchHeartbeat");
+    } catch (e) {}
     if (timerInterval) { clearInterval(timerInterval); timerInterval = null; }
     if (watchTimerInterval) { clearInterval(watchTimerInterval); watchTimerInterval = null; }
     if (watchLinkCheckInterval) { clearInterval(watchLinkCheckInterval); watchLinkCheckInterval = null; }
@@ -990,24 +707,21 @@ function stopWatching() {
     if (pendingDoFindTimeout) { clearTimeout(pendingDoFindTimeout); pendingDoFindTimeout = null; }
     if (waitForActiveInterval) { clearInterval(waitForActiveInterval); waitForActiveInterval = null; }
     if (blacklistAutoUnlockInterval) { clearInterval(blacklistAutoUnlockInterval); blacklistAutoUnlockInterval = null; }
-    // Сбрасываем state, чтобы последующие операции не считали, что вкладка/окно все ещё открыты
-    streamTabId = null;
-    streamWindowId = null;
-    userPrevTabId = null;
+
+    closeStreamTabIfExists();
     currentStreamInfo = { url: null, secondsLeft: 0 };
     log("Просмотр остановлен.");
 }
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.action === "startWatching") {
-        // Получаем config только из userConfig (только вручную загруженный)
         chrome.storage.local.get("userConfig", (data) => {
             let config = data.userConfig;
             if (!config) {
                 log("Сначала загрузите конфиг вручную через интерфейс!");
                 return;
             }
-            setActiveTabId(() => startWatching(config));
+            startWatching(config);
         });
     }
     if (request.action === "stopWatching") {
@@ -1019,219 +733,13 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.action === "getIsRunning") {
         sendResponse({ isRunning });
     }
-    if (request.action === "saveSearch") {
-        chrome.storage.local.set({ lastSearch: request.text });
-    }
-    // Приём диагностических отчётов из content scripts
-    if (request.action === 'diagnosticReport' && request.report) {
-        try {
-            const rpt = request.report;
-            // Сохраняем в storage diagnostics (ограничим до 50 записей)
-            chrome.storage.local.get('diagnostics', (data) => {
-                const arr = Array.isArray(data.diagnostics) ? data.diagnostics : [];
-                arr.push(rpt);
-                while (arr.length > 50) arr.shift();
-                chrome.storage.local.set({ diagnostics: arr });
-            });
-            log(`DIAG: ${rpt.pageHost} ${rpt.pageUrl} online=${rpt.streamerOnline} hasVideo=${rpt.hasVideo} liveBadge=${rpt.liveBadge}`);
-        } catch (e) {
-            log('Ошибка при обработке diagnosticReport: ' + String(e));
-        }
-    }
-    if (request.action === "getStats") {
-        sendResponse({ stats: totalWatched });
-    }
-    if (request.action === "getCurrentStreamInfo") {
-        // возвращаем актуальную информацию о текущем потоке, вычисляя оставшиеся секунды из сохраненного totalWatched
-        const cur = currentStreamInfo && currentStreamInfo.url ? currentStreamInfo : null;
-        if (!cur || !cur.url) {
-            sendResponse({ url: null, secondsLeft: 0 });
-            return;
-        }
-        // Читаем сохраненный totalWatched и userConfig, чтобы вычислить точное оставшееся время
-        chrome.storage.local.get(["userConfig", "totalWatched"], (data) => {
-            const cfg = data.userConfig || {};
-            const persisted = data.totalWatched || {};
-            const url = cur.url;
-            // ищем целевое время просмотра для этого url
-            let targetSec = 0;
-            const channel = (cfg.channels || []).find(ch => (typeof ch === 'string' ? ch : ch.url) === url);
-            if (channel) {
-                targetSec = typeof channel === 'string' ? parseTimeToSeconds(cfg.watchTime) : parseTimeToSeconds(channel.watchTime || cfg.watchTime);
-            } else {
-                targetSec = parseTimeToSeconds(cfg.watchTime) || defaultWatchTime;
-            }
-            const watched = persisted[url] || 0;
-            const remaining = Math.max(0, targetSec - watched);
-            sendResponse({ url, secondsLeft: remaining, watched, targetSec });
-        });
+    if (request.action === "getLoggingEnabled") {
+        sendResponse({ loggingEnabled });
         return true;
     }
-    if (request.action === "switchToChannel" && request.url) {
-        // немедленно переключаем вкладку потока на предоставленный url и, если запущено, начинаем его проверку
-        chrome.storage.local.get("userConfig", (data) => {
-            const cfg = data.userConfig || {};
-            const ch = (cfg.channels || []).find(c => (typeof c === 'string' ? c : c.url) === request.url);
-            const wt = ch ? (typeof ch === 'string' ? parseTimeToSeconds(cfg.watchTime) : parseTimeToSeconds((typeof ch === 'string' ? {} : ch).watchTime || cfg.watchTime)) : defaultWatchTime;
-            const waitSec = (ch && typeof ch === 'object' && ch.waitBeforeCheck !== undefined) ? ch.waitBeforeCheck : (cfg.waitBeforeCheck !== undefined ? cfg.waitBeforeCheck : defaultWaitBeforeCheck);
-            const maxAttempts = (cfg && typeof cfg.maxAttempts === 'number') ? cfg.maxAttempts : 3;
-            setStreamTab(request.url, () => {
-                // невалидируем текущий запуск и очищаем предыдущие таймеры/временные интервалы, чтобы избежать неправильной атрибуции
-                currentRunId++;
-                if (watchTimerInterval) { clearInterval(watchTimerInterval); watchTimerInterval = null; }
-                if (watchLinkCheckInterval) { clearInterval(watchLinkCheckInterval); watchLinkCheckInterval = null; }
-                if (scheduledCheckTimeout) { clearTimeout(scheduledCheckTimeout); scheduledCheckTimeout = null; }
-                if (pendingDoFindTimeout) { clearTimeout(pendingDoFindTimeout); pendingDoFindTimeout = null; }
-                // вычисляем оставшиеся секунды, чтобы всплывающее окно показывало точное оставшееся время
-                const watchedForSwitch = totalWatched[request.url] || 0;
-                const remainingForSwitch = Math.max(0, wt - watchedForSwitch);
-                currentStreamInfo = { url: request.url, secondsLeft: remainingForSwitch };
-                if (isRunning) {
-                    // выполняем тот же поток проверки, что и watchNextChannel для этого канала
-                    setTimeout(() => {
-                        checkChannel(streamTabId, request.url, wt, 1, maxAttempts);
-                    }, (waitSec || defaultWaitBeforeCheck) * 1000);
-                }
-                sendResponse({ ok: true });
-            });
-        });
-        return true; // async
-    }
-    if (request.action === "getWatchPercent" && request.url) {
-        chrome.storage.local.get(["userConfig", "totalWatched"], (data) => {
-            const config = data.userConfig || {};
-            const totalWatched = data.totalWatched || {};
-            const url = request.url;
-            let targetSec = 0;
-            const channel = (config.channels || []).find(ch => (typeof ch === 'string' ? ch : ch.url) === url);
-            if (channel) {
-                targetSec = typeof channel === 'string' ? parseTimeToSeconds(config.watchTime) : parseTimeToSeconds(channel.watchTime || config.watchTime);
-            } else {
-                targetSec = parseTimeToSeconds(config.watchTime) || defaultWatchTime;
-            }
-            const watched = totalWatched[url] || 0;
-            const percent = targetSec > 0 ? Math.min(100, Math.round((watched / targetSec) * 100)) : 0;
-            sendResponse({ percent, watched, targetSec });
-        });
-        return true;
-    }
-    if (request.action === "openStreamWindow") {
-        ensureStreamWindow(() => sendResponse({ ok: true, windowId: streamWindowId }));
-        return true;
-    }
-    if (request.action === "manualNext") {
-        // переключиться на следующий активный канал
-        chrome.storage.local.get(["userConfig", "totalWatched"], (data) => {
-            const config = data.userConfig || {};
-            const cfgChannels = Array.isArray(config.channels) ? config.channels : [];
-            if (cfgChannels.length === 0) { sendResponse({ ok: false, reason: 'no channels' }); return; }
-            // нормализуем каналы в объекты
-            const chs = cfgChannels.map(ch => typeof ch === 'string' ? { url: ch } : ch);
-            // находим следующий, который не в черном списке
-            let start = currentChannelIndex + 1;
-            let found = -1;
-            for (let i = 0; i < chs.length; i++) {
-                const idx = (start + i) % chs.length;
-                const url = chs[idx].url;
-                const black = config.blacklist && config.blacklist[url];
-                if (!black) { found = idx; break; }
-            }
-            if (found === -1) { sendResponse({ ok: false, reason: 'no active channels' }); return; }
-            currentChannelIndex = found;
-            const sel = chs[found];
-            const wt = sel.watchTime ? parseTimeToSeconds(sel.watchTime) : (config.watchTime ? parseTimeToSeconds(config.watchTime) : defaultWatchTime);
-            const waitSec = sel.waitBeforeCheck !== undefined ? sel.waitBeforeCheck : (config.waitBeforeCheck !== undefined ? config.waitBeforeCheck : defaultWaitBeforeCheck);
-            const maxAttempts = (config && typeof config.maxAttempts === 'number') ? config.maxAttempts : 3;
-            // невалидируем текущий запуск и очищаем предыдущие таймеры/временные интервалы, чтобы избежать неправильной атрибуции
-            currentRunId++;
-            if (watchTimerInterval) { clearInterval(watchTimerInterval); watchTimerInterval = null; }
-            if (watchLinkCheckInterval) { clearInterval(watchLinkCheckInterval); watchLinkCheckInterval = null; }
-            if (scheduledCheckTimeout) { clearTimeout(scheduledCheckTimeout); scheduledCheckTimeout = null; }
-            if (pendingDoFindTimeout) { clearTimeout(pendingDoFindTimeout); pendingDoFindTimeout = null; }
-            setStreamTab(sel.url, () => {
-                // выполняем ту же проверку, что и watchNextChannel для этого канала
-                // Обновляем currentStreamInfo немедленно, чтобы всплывающее окно показывало новое выделение (оставшееся время)
-                const watchedForSel = totalWatched[sel.url] || 0;
-                const remainingForSel = Math.max(0, wt - watchedForSel);
-                currentStreamInfo = { url: sel.url, secondsLeft: remainingForSel };
-                scheduledCheckTimeout = setTimeout(() => {
-                    scheduledCheckTimeout = null;
-                    checkChannel(streamTabId, sel.url, wt, 1, maxAttempts);
-                }, (waitSec || defaultWaitBeforeCheck) * 1000);
-                sendResponse({ ok: true, url: sel.url });
-            });
-        });
-        return true;
-    }
-    if (request.action === "manualPrev") {
-        // переключиться на предыдущий активный канал
-        chrome.storage.local.get(["userConfig", "totalWatched"], (data) => {
-            const config = data.userConfig || {};
-            const cfgChannels = Array.isArray(config.channels) ? config.channels : [];
-            if (cfgChannels.length === 0) { sendResponse({ ok: false, reason: 'no channels' }); return; }
-            const chs = cfgChannels.map(ch => typeof ch === 'string' ? { url: ch } : ch);
-            let start = currentChannelIndex - 1;
-            if (start < 0) start = chs.length - 1;
-            let found = -1;
-            for (let i = 0; i < chs.length; i++) {
-                const idx = (start - i + chs.length) % chs.length;
-                const url = chs[idx].url;
-                const black = config.blacklist && config.blacklist[url];
-                if (!black) { found = idx; break; }
-            }
-            if (found === -1) { sendResponse({ ok: false, reason: 'no active channels' }); return; }
-            currentChannelIndex = found;
-            const sel = chs[found];
-            const wt = sel.watchTime ? parseTimeToSeconds(sel.watchTime) : (config.watchTime ? parseTimeToSeconds(config.watchTime) : defaultWatchTime);
-            const waitSec = sel.waitBeforeCheck !== undefined ? sel.waitBeforeCheck : (config.waitBeforeCheck !== undefined ? config.waitBeforeCheck : defaultWaitBeforeCheck);
-            const maxAttempts = (config && typeof config.maxAttempts === 'number') ? config.maxAttempts : 3;
-            // невалидируем текущий запуск и очищаем предыдущие таймеры/временные интервалы, чтобы избежать неправильной атрибуции
-            currentRunId++;
-            if (watchTimerInterval) { clearInterval(watchTimerInterval); watchTimerInterval = null; }
-            if (watchLinkCheckInterval) { clearInterval(watchLinkCheckInterval); watchLinkCheckInterval = null; }
-            if (scheduledCheckTimeout) { clearTimeout(scheduledCheckTimeout); scheduledCheckTimeout = null; }
-            if (pendingDoFindTimeout) { clearTimeout(pendingDoFindTimeout); pendingDoFindTimeout = null; }
-            setStreamTab(sel.url, () => {
-                // Обновляем currentStreamInfo немедленно, чтобы всплывающее окно показывало новое выделение (оставшееся время)
-                const watchedForSelPrev = totalWatched[sel.url] || 0;
-                const remainingForSelPrev = Math.max(0, wt - watchedForSelPrev);
-                currentStreamInfo = { url: sel.url, secondsLeft: remainingForSelPrev };
-                scheduledCheckTimeout = setTimeout(() => {
-                    scheduledCheckTimeout = null;
-                    checkChannel(streamTabId, sel.url, wt, 1, maxAttempts);
-                }, (waitSec || defaultWaitBeforeCheck) * 1000);
-                sendResponse({ ok: true, url: sel.url });
-            });
-        });
-        return true;
-    }
-    if (request.action === "getDropGroupPercent" && request.dropId) {
-        chrome.storage.local.get(["userConfig", "totalWatched"], (data) => {
-            const config = data.userConfig || {};
-            const totalWatched = data.totalWatched || {};
-            const dropId = request.dropId;
-            
-            // Находим все каналы этой группы
-            const channels = Array.isArray(config.channels) ? config.channels : [];
-            const groupChannels = channels.filter(ch => typeof ch === 'object' && ch.dropId === dropId);
-            
-            if (groupChannels.length === 0) {
-                sendResponse({ percent: 0, watched: 0, targetSec: 0 });
-                return;
-            }
-            
-            // Вычисляем целевое время (берём с первого канала группы)
-            let targetSec = groupChannels[0].watchTime ? parseTimeToSeconds(groupChannels[0].watchTime) : (config.watchTime ? parseTimeToSeconds(config.watchTime) : defaultWatchTime);
-            
-            // Суммируем время для всех каналов группы
-            let groupWatched = 0;
-            groupChannels.forEach(ch => {
-                groupWatched += (totalWatched[ch.url] || 0);
-            });
-            
-            const percent = targetSec > 0 ? Math.min(100, Math.round((groupWatched / targetSec) * 100)) : 0;
-            sendResponse({ percent, watched: groupWatched, targetSec });
-        });
+    if (request.action === "setLoggingEnabled") {
+        setLoggingEnabled(!!request.enabled);
+        sendResponse({ loggingEnabled });
         return true;
     }
     if (request.action === "clearLogs") {
@@ -1239,33 +747,176 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         chrome.storage.local.set({ logBuffer }, () => {
             sendResponse && sendResponse();
         });
-        return true; // асинхронный ответ
+        return true;
+    }
+    if (request.action === "getStats") {
+        chrome.storage.local.get("totalWatched", (data) => {
+            sendResponse({ stats: data.totalWatched || totalWatched });
+        });
+        return true;
+    }
+    if (request.action === "getCurrentStreamInfo") {
+        const cur = currentStreamInfo && currentStreamInfo.url ? currentStreamInfo : null;
+        if (!cur || !cur.url) {
+            sendResponse({ url: null, secondsLeft: 0 });
+            return;
+        }
+        chrome.storage.local.get(["userConfig", "totalWatched"], (data) => {
+            const cfg = data.userConfig || {};
+            const persisted = data.totalWatched || totalWatched || {};
+            const url = cur.url;
+            const dropId = getDropId(url, cfg);
+
+            let targetSec = 0;
+            const channel = (cfg.channels || []).find(ch => (typeof ch === 'string' ? ch : ch.url) === url);
+            if (channel) {
+                targetSec = typeof channel === 'string' ? parseTimeToSeconds(cfg.watchTime) : parseTimeToSeconds(channel.watchTime || cfg.watchTime);
+            } else {
+                targetSec = parseTimeToSeconds(cfg.watchTime) || defaultWatchTime;
+            }
+
+            const watched = dropId
+                ? getDropGroupWatchedTime(dropId, cfg, persisted)
+                : (persisted[url] || 0);
+
+            const remaining = Math.max(0, targetSec - watched);
+            sendResponse({ url, secondsLeft: remaining, watched, targetSec, dropId });
+        });
+        return true;
+    }
+    if (request.action === "switchToChannel" && request.url) {
+        chrome.storage.local.get("userConfig", (data) => {
+            const cfg = data.userConfig || {};
+            const ch = (cfg.channels || []).find(c => (typeof c === 'string' ? c : c.url) === request.url);
+            const wt = ch ? (typeof ch === 'string' ? parseTimeToSeconds(cfg.watchTime) : parseTimeToSeconds(ch.watchTime || cfg.watchTime)) : defaultWatchTime;
+            const waitSec = (ch && typeof ch === 'object' && ch.waitBeforeCheck !== undefined) ? ch.waitBeforeCheck : (cfg.waitBeforeCheck !== undefined ? cfg.waitBeforeCheck : defaultWaitBeforeCheck);
+            const maxAttempts = (cfg && typeof cfg.maxAttempts === 'number') ? cfg.maxAttempts : 3;
+            setStreamTab(request.url, () => {
+                currentRunId++;
+                if (watchTimerInterval) { clearInterval(watchTimerInterval); watchTimerInterval = null; }
+                if (watchLinkCheckInterval) { clearInterval(watchLinkCheckInterval); watchLinkCheckInterval = null; }
+                if (scheduledCheckTimeout) { clearTimeout(scheduledCheckTimeout); scheduledCheckTimeout = null; }
+                if (pendingDoFindTimeout) { clearTimeout(pendingDoFindTimeout); pendingDoFindTimeout = null; }
+
+                const watchedForSwitch = totalWatched[request.url] || 0;
+                const remainingForSwitch = Math.max(0, wt - watchedForSwitch);
+                currentStreamInfo = { url: request.url, secondsLeft: remainingForSwitch };
+                if (isRunning) {
+                    scheduledCheckTimeout = setTimeout(() => {
+                        scheduledCheckTimeout = null;
+                        checkChannel(streamTabId, request.url, wt, 1, maxAttempts);
+                    }, (waitSec || defaultWaitBeforeCheck) * 1000);
+                }
+                sendResponse({ ok: true });
+            });
+        });
+        return true;
+    }
+    if (request.action === "manualNext") {
+        chrome.storage.local.get(["userConfig", "totalWatched"], (data) => {
+            const config = data.userConfig || {};
+            const cfgChannels = channels.length > 0 ? channels : (Array.isArray(config.channels) ? config.channels : []);
+            if (cfgChannels.length === 0) { sendResponse({ ok: false, reason: 'no channels' }); return; }
+
+            const blacklist = config.blacklist || {};
+            let start = currentChannelIndex + 1;
+            let found = -1;
+            for (let i = 0; i < cfgChannels.length; i++) {
+                const idx = (start + i) % cfgChannels.length;
+                const url = typeof cfgChannels[idx] === 'string' ? cfgChannels[idx] : cfgChannels[idx].url;
+                if (!blacklist[url]) { found = idx; break; }
+            }
+            if (found === -1) { sendResponse({ ok: false, reason: 'no active channels' }); return; }
+            currentChannelIndex = found;
+            const sel = typeof cfgChannels[found] === 'string' ? { url: cfgChannels[found] } : cfgChannels[found];
+            const wt = sel.watchTime ? parseTimeToSeconds(sel.watchTime) : (config.watchTime ? parseTimeToSeconds(config.watchTime) : defaultWatchTime);
+            const waitSec = sel.waitBeforeCheck !== undefined ? sel.waitBeforeCheck : (config.waitBeforeCheck !== undefined ? config.waitBeforeCheck : defaultWaitBeforeCheck);
+            const maxAttempts = (config && typeof config.maxAttempts === 'number') ? config.maxAttempts : 3;
+
+            currentRunId++;
+            if (watchTimerInterval) { clearInterval(watchTimerInterval); watchTimerInterval = null; }
+            if (watchLinkCheckInterval) { clearInterval(watchLinkCheckInterval); watchLinkCheckInterval = null; }
+            if (scheduledCheckTimeout) { clearTimeout(scheduledCheckTimeout); scheduledCheckTimeout = null; }
+            if (pendingDoFindTimeout) { clearTimeout(pendingDoFindTimeout); pendingDoFindTimeout = null; }
+
+            setStreamTab(sel.url, () => {
+                const watchedForSel = totalWatched[sel.url] || 0;
+                const remainingForSel = Math.max(0, wt - watchedForSel);
+                currentStreamInfo = { url: sel.url, secondsLeft: remainingForSel };
+                if (isRunning) {
+                    scheduledCheckTimeout = setTimeout(() => {
+                        scheduledCheckTimeout = null;
+                        checkChannel(streamTabId, sel.url, wt, 1, maxAttempts);
+                    }, (waitSec || defaultWaitBeforeCheck) * 1000);
+                }
+                sendResponse({ ok: true, url: sel.url });
+            });
+        });
+        return true;
+    }
+    if (request.action === "manualPrev") {
+        chrome.storage.local.get(["userConfig", "totalWatched"], (data) => {
+            const config = data.userConfig || {};
+            const cfgChannels = channels.length > 0 ? channels : (Array.isArray(config.channels) ? config.channels : []);
+            if (cfgChannels.length === 0) { sendResponse({ ok: false, reason: 'no channels' }); return; }
+
+            const blacklist = config.blacklist || {};
+            let start = currentChannelIndex - 1;
+            if (start < 0) start = cfgChannels.length - 1;
+            let found = -1;
+            for (let i = 0; i < cfgChannels.length; i++) {
+                const idx = (start - i + cfgChannels.length) % cfgChannels.length;
+                const url = typeof cfgChannels[idx] === 'string' ? cfgChannels[idx] : cfgChannels[idx].url;
+                if (!blacklist[url]) { found = idx; break; }
+            }
+            if (found === -1) { sendResponse({ ok: false, reason: 'no active channels' }); return; }
+            currentChannelIndex = found;
+            const sel = typeof cfgChannels[found] === 'string' ? { url: cfgChannels[found] } : cfgChannels[found];
+            const wt = sel.watchTime ? parseTimeToSeconds(sel.watchTime) : (config.watchTime ? parseTimeToSeconds(config.watchTime) : defaultWatchTime);
+            const waitSec = sel.waitBeforeCheck !== undefined ? sel.waitBeforeCheck : (config.waitBeforeCheck !== undefined ? config.waitBeforeCheck : defaultWaitBeforeCheck);
+            const maxAttempts = (config && typeof config.maxAttempts === 'number') ? config.maxAttempts : 3;
+
+            currentRunId++;
+            if (watchTimerInterval) { clearInterval(watchTimerInterval); watchTimerInterval = null; }
+            if (watchLinkCheckInterval) { clearInterval(watchLinkCheckInterval); watchLinkCheckInterval = null; }
+            if (scheduledCheckTimeout) { clearTimeout(scheduledCheckTimeout); scheduledCheckTimeout = null; }
+            if (pendingDoFindTimeout) { clearTimeout(pendingDoFindTimeout); pendingDoFindTimeout = null; }
+
+            setStreamTab(sel.url, () => {
+                const watchedForSelPrev = totalWatched[sel.url] || 0;
+                const remainingForSelPrev = Math.max(0, wt - watchedForSelPrev);
+                currentStreamInfo = { url: sel.url, secondsLeft: remainingForSelPrev };
+                if (isRunning) {
+                    scheduledCheckTimeout = setTimeout(() => {
+                        scheduledCheckTimeout = null;
+                        checkChannel(streamTabId, sel.url, wt, 1, maxAttempts);
+                    }, (waitSec || defaultWaitBeforeCheck) * 1000);
+                }
+                sendResponse({ ok: true, url: sel.url });
+            });
+        });
+        return true;
     }
     if (request.action === "resetWatchTime" && request.url) {
-        // Сбрасываем время и сохраняем даже если оно было 0
-        totalWatched[request.url] = 0;
-        chrome.storage.local.set({ totalWatched }, () => {
-            log(`Суммарное время просмотра для ${request.url} сброшено.`);
-            if (typeof sendResponse === "function") sendResponse();
+        chrome.storage.local.get("totalWatched", (data) => {
+            const fresh = data.totalWatched || totalWatched || {};
+            fresh[request.url] = 0;
+            totalWatched[request.url] = 0;
+            chrome.storage.local.set({ totalWatched: fresh }, () => {
+                log(`Суммарное время просмотра для ${request.url} сброшено.`);
+                if (typeof sendResponse === "function") sendResponse();
+            });
         });
-        return true; // асинхронный ответ
-    }
-    if (request.action === "setLoggingEnabled") {
-        setLoggingEnabled(!!request.enabled);
-        sendResponse && sendResponse({ loggingEnabled });
         return true;
     }
 });
-
-// Новый интервал для авторазблокировки каналов по времени
-let blacklistAutoUnlockInterval = null;
 
 function startBlacklistAutoUnlock() {
     if (blacklistAutoUnlockInterval) return;
     blacklistAutoUnlockInterval = setInterval(() => {
         chrome.storage.local.get("userConfig", (data) => {
             let config = data.userConfig;
-            if (!config || typeof config.blacklist !== "object") return;
+            if (!config || typeof config.blacklist !== "object" || Array.isArray(config.blacklist)) return;
             const now = Date.now();
             let changed = false;
             for (const url in config.blacklist) {
@@ -1277,73 +928,51 @@ function startBlacklistAutoUnlock() {
             }
             if (changed) {
                 chrome.storage.local.set({ userConfig: config }, () => {
-                    // Если мы ждали появления активных каналов, сразу пробуем продолжить просмотр
                     if (waitForActiveInterval) {
-                        chrome.storage.local.get(["userConfig", "totalWatched"], (data2) => {
-                            let config2 = data2.userConfig;
-                            if (!config2 || !Array.isArray(config2.channels) || config2.channels.length === 0) return;
-                            const blacklist2 = typeof config2.blacklist === "object" ? config2.blacklist : {};
-                            let hasActive = false;
-                            for (const ch of config2.channels) {
-                                const url = typeof ch === "string" ? ch : ch.url;
-                                if (!blacklist2[url]) {
-                                    hasActive = true;
-                                    break;
-                                }
-                            }
-                            if (hasActive) {
-                                clearInterval(waitForActiveInterval);
-                                waitForActiveInterval = null;
-                                log("Появился активный канал, продолжаем просмотр.");
-                                watchNextChannel();
-                            }
-                        });
+                        clearInterval(waitForActiveInterval);
+                        waitForActiveInterval = null;
+                        log("Появился активный канал, продолжаем просмотр.");
+                        watchNextChannel();
                     }
                 });
             }
         });
-    }, 1000); // проверяем каждую секунду
+    }, 1000);
 }
 
-// Безопасная отправка сообщений в контент-скрипт
 function safeSendMessage(tabId, message, callback) {
+    if (!tabId) {
+        if (callback) callback(undefined);
+        return;
+    }
     try {
         chrome.tabs.sendMessage(tabId, message, (response) => {
             if (chrome.runtime.lastError) {
-                // Не спамим консоль, только если нужно — раскомментировать строку ниже
-                // console.warn('Контент-скрипт не найден на вкладке', tabId, chrome.runtime.lastError.message);
                 if (callback) callback(undefined);
                 return;
             }
             if (callback) callback(response);
         });
     } catch (err) {
-        // Не спамим консоль
         if (callback) callback(undefined);
     }
 }
 
-// Очистка state при закрытии вкладки/окна
-chrome.tabs.onRemoved.addListener((tabId, removeInfo) => {
+chrome.tabs.onRemoved.addListener((tabId) => {
     if (tabId === streamTabId) {
-        // если была закрыта вкладка со стримом — останавливаем просмотр
         if (isRunning) {
-            log(`Stream tab ${tabId} was closed -> stopping watch.`);
+            log(`Вкладка стрима ${tabId} была закрыта -> останавливаем просмотр.`);
             stopWatching();
         } else {
             streamTabId = null;
         }
     }
-    if (tabId === activeTabId) {
-        activeTabId = null;
-    }
 });
 
 chrome.windows.onRemoved.addListener((windowId) => {
     if (windowId === streamWindowId) {
-        // окно со стримом закрыто — прекращаем просмотр
         if (isRunning) {
-            log(`Stream window ${windowId} was closed -> stopping watch.`);
+            log(`Окно стрима ${windowId} было закрыто -> останавливаем просмотр.`);
             stopWatching();
         } else {
             streamWindowId = null;

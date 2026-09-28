@@ -121,23 +121,14 @@
                     }
                 }
                 
-                // Ищем каналы для этого дропа
-                const channelLinks = card.querySelectorAll('a[href*="/directory/category/"]');
+                // Ищем каналы для этого дропа (только прямые ссылки на каналы стримеров)
                 const channels = new Set();
-                
-                channelLinks.forEach(link => {
-                    const href = link.getAttribute('href');
-                    if (href) {
-                        channels.add(href);
-                    }
-                });
-                
-                // Если каналы указаны прямо - ищем их
                 const channelElements = card.querySelectorAll('a[href^="https://www.twitch.tv/"]:not([href*="/directory/"])');
                 channelElements.forEach(link => {
                     const href = link.getAttribute('href');
                     if (href && href.includes('twitch.tv/') && !href.includes('/directory/')) {
-                        channels.add(href);
+                        const cleanUrl = href.split('?')[0].replace(/\/+$/, '');
+                        channels.add(cleanUrl);
                     }
                 });
                 

@@ -10,21 +10,21 @@ document.addEventListener("DOMContentLoaded", () => {
             reader.onload = (e) => {
                 try {
                     const config = JSON.parse(e.target.result);
-                    if (config.searchUrlPart) {
-                        // Удаляем прошлый конфиг перед загрузкой нового
-                        chrome.storage.local.remove("userConfig", () => {
-                            chrome.storage.local.set({ userConfig: config }, () => {
-                                showAlert("Конфиг успешно загружен!");
-                            });
+                    if (config && config.searchUrlPart && Array.isArray(config.channels) && config.channels.length > 0) {
+                        chrome.storage.local.set({ userConfig: config }, () => {
+                            showAlert("Конфиг успешно загружен!");
+                            checkConfigAndStatus();
+                            updateCurrentTimer();
                         });
-                    } else {
+                    } else if (!config || !config.searchUrlPart) {
                         showAlert("В конфиге отсутствует searchUrlPart!");
+                    } else {
+                        showAlert("В конфиге отсутствует список channels!");
                     }
-                } catch {
-                    // Удаляем прошлый конфиг если новый некорректен
-                    chrome.storage.local.remove("userConfig", () => {
-                        showAlert("Ошибка чтения файла конфига! Прошлый конфиг удалён.");
-                    });
+                } catch (err) {
+                    showAlert("Ошибка чтения файла конфига! Проверьте валидность JSON.");
+                } finally {
+                    fileInput.value = "";
                 }
             };
             reader.readAsText(file);
@@ -135,6 +135,7 @@ function checkConfigAndStatus() {
 }
 
 function secondsToHMS(sec) {
+    if (typeof sec !== "number" || isNaN(sec) || sec <= 0) return "0:00:00";
     sec = Math.floor(sec);
     let h = Math.floor(sec / 3600);
     let m = Math.floor((sec % 3600) / 60);
@@ -146,9 +147,15 @@ function secondsToHMS(sec) {
 function parseTimeToSeconds(val) {
     if (typeof val === "number") return val;
     if (typeof val === "string") {
-        let parts = val.split(/[.,]/).map(Number);
-        let h = parts[0] || 0, m = parts[1] || 0, s = parts[2] || 0;
-        return h * 3600 + m * 60 + s;
+        let trimmed = val.trim();
+        if (/^\d+$/.test(trimmed)) return parseInt(trimmed, 10);
+        let parts = trimmed.split(/[:.,]/).map(Number);
+        if (parts.length === 3) {
+            return (parts[0] || 0) * 3600 + (parts[1] || 0) * 60 + (parts[2] || 0);
+        } else if (parts.length === 2) {
+            return (parts[0] || 0) * 60 + (parts[1] || 0);
+        }
+        return parts[0] || 0;
     }
     return 0;
 }

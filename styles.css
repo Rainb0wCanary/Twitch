@@ -77,16 +77,15 @@ body{
 .stats-table tbody tr:nth-child(even){background:#333}
 .stats-table tbody tr:hover{background:#3a3a3a}
 .stats-table tbody td{padding:6px 8px;text-align:center;border:1px solid #444;vertical-align:middle}
-.stats-table tbody td:nth-child(1){width:90px}
-.stats-table tbody td:nth-child(2){text-align:center;width:auto;min-width:250px;padding:6px 10px;word-break:break-all;line-height:1.4}
-.stats-table tbody td:nth-child(3){width:100px;text-align:center !important}
-.stats-table tbody td:nth-child(4){width:120px;text-align:center !important}
-.stats-table tbody td:nth-child(5){width:100px;text-align:center !important}
-.stats-table tbody td:nth-child(6){width:120px}
-.stats-table tbody td:nth-child(7){width:80px}
-.stats-table tbody td:nth-child(8){padding:6px;position:relative;overflow:hidden}
-.stats-table td.table-actions{width:240px;min-width:240px}
-.stats-table tbody td:nth-child(9){width:70px}
+.stats-table thead th:nth-child(1){width:90px;max-width:90px}
+.stats-table thead th:nth-child(2){min-width:250px}
+.stats-table thead th:nth-child(3){width:100px}
+.stats-table thead th:nth-child(4){width:120px}
+.stats-table thead th:nth-child(5){width:100px}
+.stats-table thead th:nth-child(6){width:120px}
+.stats-table thead th:nth-child(7){width:80px}
+.stats-table thead th:nth-child(8){width:240px;min-width:240px}
+.stats-table thead th:nth-child(9){width:70px}
 .stats-table td.priority-cell{width:70px;min-width:70px;text-align:center;font-weight:600}
 .stats-table tfoot td{padding:6px;background:#f9f9f9;border:1px solid #ddd}
 
@@ -119,18 +118,23 @@ body{
 .stats-table .table-actions{
   display:grid;
   grid-template-columns: repeat(2, 1fr);
-  gap:6px;
+  gap:4px;
   justify-items:stretch;
   align-items:center;
   width:100%;
+  padding:4px;
+  box-sizing:border-box;
 }
-.stats-table .btn-xs{
-  display:inline-block;
+.stats-table .table-actions .btn,
+.stats-table .table-actions .btn-xs{
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
   width:100%;
-  height:28px;
-  line-height:26px;
-  padding:0 8px;
-  font-size:12px;
+  height:26px;
+  line-height:24px;
+  padding:0 4px;
+  font-size:11px;
   border-radius:4px;
   white-space:nowrap;
   box-sizing:border-box;
@@ -138,19 +142,6 @@ body{
 input[type=text], input[type=number], select{padding:6px 8px;border-radius:6px;border:1px solid #dfe6f3;background:#fff;font-size:13px}
 input[type=text]:focus, input[type=number]:focus, select:focus{border-color:#4a9eff;box-shadow:0 0 0 3px rgba(74,158,255,0.1);outline:none}
 label{font-size:13px;color:#374151}
-
-/* Одинаковая ширина для кнопок действий в таблице, чтобы держать аккуратный вид */
-.table-actions{ /* Центрируем содержимое ячейки и делаем кнопки горизонтальным рядом */
-  text-align:center;vertical-align:middle;display:flex;flex-direction:row;align-items:center;justify-content:center;gap:4px;padding:6px;flex-wrap:wrap
-}
-.table-actions .btn{ /* Кнопки занимают 48% ширины ячейки, ограничиваем поведение текста */
-  flex:0 0 calc(50% - 2px);min-width:60px;max-width:100%;box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding:6px 8px;font-size:12px
-}
-
-/* Узкая колонка для Группы (1-й столбец), канал оставляем шире */
-th:nth-child(1), td:nth-child(1) {
-  width:90px;max-width:90px;padding:8px 4px;text-align:center;font-weight:600
-}
 
 /* Улучшенные стили для текста группы */
 .group-badge {background:#e3f2fd;color:#4a9eff;padding:2px 6px;border-radius:3px;font-weight:600;font-size:12px;display:inline-block}
