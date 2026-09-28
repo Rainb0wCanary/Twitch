@@ -1,22 +1,29 @@
-MIT License
+End-User License Agreement (EULA)
 
-Copyright (c) 2025 rainbowcanary <rainbowcanaryyt@gmail.com>
- 
+Copyright (c) 2026 RainbowCanary (https://github.com/RainbowCanary)
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+Official Repository: https://github.com/RainbowCanary/Twitch
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+=======================================================================
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+1. GRANT OF LICENSE
+The author grants you a personal, non-exclusive, non-transferable, revocable license to download, install, and use this software strictly for personal, non-commercial purposes in accordance with the terms of this Agreement.
+
+2. RESTRICTIONS
+You agree NOT to, and you will not permit others to:
+  a) Modify, translate, adapt, merge, or create derivative works of this software.
+  b) Distribute, sublicense, rent, lease, sell, monetise, or exploit this software or any portion of it for commercial purposes or include it in paid products/services.
+  c) Redistribute, re-upload, mirror, or publish this software (or any part/modified version of it) on any third-party websites, download hubs, or browser extension stores (including, but not limited to, Chrome Web Store, Firefox AMO / Add-ons, Edge Add-ons, Opera Addons) without prior written permission from the author.
+  d) Share or redistribute the software by any means other than providing a direct link to the official repository: https://github.com/RainbowCanary/Twitch.
+
+3. RESERVATION OF RIGHTS
+All intellectual property rights, including copyrights and trade secrets, in and to the software remain the exclusive property of RainbowCanary.
+
+4. CONTACT FOR PERMISSIONS
+If you wish to obtain permissions outside the scope of this license, you may contact the author via:
+  - Telegram : @RainbowCanary
+  - Discord  : rainbowcanary
+  - Email    : rainbowcanaryyt@gmail.com
+
+5. DISCLAIMER OF WARRANTIES & LIMITATION OF LIABILITY
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, AND NON-INFRINGEMENT. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER LIABILITY ARISING FROM THE USE OF OR INABILITY TO USE THIS SOFTWARE.

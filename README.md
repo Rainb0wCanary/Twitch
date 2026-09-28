@@ -153,3 +153,15 @@ A: Откройте страницу статистики — там видны 
 - Discord: `rainbowcanary`
 - Email: rainbowcanaryyt@gmail.com
 - GitHub: [RainbowCanary](https://github.com/RainbowCanary)
+
+---
+
+## License & Distribution
+
+This project is licensed under a proprietary Freeware / EULA agreement. 
+
+* **Personal Use:** Free to inspect and run for personal, non-commercial purposes.
+* **Prohibited:** Any modification, commercial use, and re-uploading to third-party sources or browser extension stores (Chrome Web Store, Firefox AMO, etc.) without prior written consent.
+* **Official Source:** The extension must be downloaded exclusively from the [Official Repository](https://github.com/RainbowCanary/Twitch).
+
+For permissions and inquiries: Telegram [@RainbowCanary](https://t.me/RainbowCanary) | Email `rainbowcanaryyt@gmail.com`.
