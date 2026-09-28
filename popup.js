@@ -1,36 +1,4 @@
 document.addEventListener("DOMContentLoaded", () => {
-    const uploadBtn = document.getElementById("uploadConfigButton");
-    const fileInput = document.getElementById("configFileInput");
-    if (uploadBtn && fileInput) {
-        uploadBtn.addEventListener("click", () => fileInput.click());
-        fileInput.addEventListener("change", (event) => {
-            const file = event.target.files[0];
-            if (!file) return;
-            const reader = new FileReader();
-            reader.onload = (e) => {
-                try {
-                    const config = JSON.parse(e.target.result);
-                    if (config && config.searchUrlPart && Array.isArray(config.channels) && config.channels.length > 0) {
-                        chrome.storage.local.set({ userConfig: config }, () => {
-                            showAlert("Конфиг успешно загружен!");
-                            checkConfigAndStatus();
-                            updateCurrentTimer();
-                        });
-                    } else if (!config || !config.searchUrlPart) {
-                        showAlert("В конфиге отсутствует searchUrlPart!");
-                    } else {
-                        showAlert("В конфиге отсутствует список channels!");
-                    }
-                } catch (err) {
-                    showAlert("Ошибка чтения файла конфига! Проверьте валидность JSON.");
-                } finally {
-                    fileInput.value = "";
-                }
-            };
-            reader.readAsText(file);
-        });
-    }
-
     // Навешиваем обработчики только после полной загрузки DOM
     const startBtn = document.getElementById("startButton");
     const stopBtn = document.getElementById("stopButton");
@@ -89,14 +57,94 @@ document.addEventListener("DOMContentLoaded", () => {
 });
 
 
+let lastRenderedUrl = null;
+let lastRenderedDropId = null;
+
 function updateCurrentTimer() {
     chrome.runtime.sendMessage({ action: "getCurrentStreamInfo" }, (resp) => {
         const div = document.getElementById("currentTimer");
         if (!div) return;
         if (resp && resp.url) {
-            div.innerHTML = `<b>Сейчас:</b><br>${resp.url}<br><b>Осталось:</b> ${secondsToHMS(resp.secondsLeft || 0)}`;
+            let channelName = resp.url;
+            try {
+                const u = new URL(resp.url);
+                const pathParts = u.pathname.split('/').filter(Boolean);
+                if (pathParts.length > 0) channelName = pathParts[0];
+            } catch(e) {}
+
+            const target = resp.targetSec || 0;
+            const watched = resp.watched || 0;
+            const pct = target > 0 ? Math.min(100, Math.round((watched / target) * 100)) : 0;
+            const videoUrl = resp.videoUrl || '';
+            const imageUrl = resp.imageUrl || '';
+            const dropName = resp.dropName || resp.dropId || '';
+
+            // Если стрим или дроп сменился (или первый рендер):
+            if (lastRenderedUrl !== resp.url || lastRenderedDropId !== resp.dropId || !div.classList.contains("has-stream")) {
+                lastRenderedUrl = resp.url;
+                lastRenderedDropId = resp.dropId;
+
+                const dropBadge = dropName ? `<span class="timer-drop-badge" title="Дроп: ${dropName}">${dropName}</span>` : '';
+                div.innerHTML = `
+                    <div class="timer-card-inner">
+                        <div class="timer-stream-header">
+                            <div class="timer-live-indicator">
+                                <span class="pulse-dot"></span>
+                                <span class="live-tag">LIVE</span>
+                            </div>
+                            <a href="${resp.url}" target="_blank" class="timer-channel-link" title="${resp.url}">${channelName}</a>
+                            ${dropBadge}
+                        </div>
+                        <div class="popup-stream-content">
+                            ${(videoUrl || imageUrl) ? `
+                            <div class="popup-drop-media" title="${dropName}">
+                                ${videoUrl ? `
+                                <video class="popup-preview-video" autoplay loop muted playsinline poster="${imageUrl || ''}">
+                                    <source src="${videoUrl}" type="video/mp4">
+                                    ${imageUrl ? `<img src="${imageUrl}" class="popup-preview-img" alt="${dropName}">` : ''}
+                                </video>
+                                ` : `
+                                <img class="popup-preview-img" src="${imageUrl}" alt="${dropName}">
+                                `}
+                            </div>
+                            ` : ''}
+                            <div class="timer-countdown-area">
+                                <div class="timer-desc-row">
+                                    <span class="timer-desc">Осталось до получения:</span>
+                                    <span class="timer-pct-badge">${pct}%</span>
+                                </div>
+                                <span class="timer-digits">${secondsToHMS(resp.secondsLeft || 0)}</span>
+                                <div class="popup-mini-progress">
+                                    <div class="popup-mini-bar" style="width: ${pct}%;"></div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                `;
+                div.classList.add("has-stream");
+            } else {
+                // In-place обновление времени без пересоздания DOM, чтобы видео не сбрасывалось каждую секунду
+                const digitsEl = div.querySelector('.timer-digits');
+                if (digitsEl) digitsEl.textContent = secondsToHMS(resp.secondsLeft || 0);
+
+                const pctBadge = div.querySelector('.timer-pct-badge');
+                if (pctBadge) pctBadge.textContent = `${pct}%`;
+
+                const miniBar = div.querySelector('.popup-mini-bar');
+                if (miniBar) miniBar.style.width = `${pct}%`;
+            }
         } else {
-            div.textContent = "Нет активного просмотра";
+            lastRenderedUrl = null;
+            lastRenderedDropId = null;
+            if (div.classList.contains("has-stream") || !div.querySelector(".timer-idle")) {
+                div.innerHTML = `
+                    <div class="timer-idle">
+                        <span class="timer-idle-icon">💤</span>
+                        <span class="timer-idle-text">Нет активного просмотра</span>
+                    </div>
+                `;
+                div.classList.remove("has-stream");
+            }
         }
     });
 }
@@ -105,22 +153,44 @@ function setStatusIndicator(isRunning, hasConfig) {
     const indicator = document.getElementById("statusIndicator");
     const statusText = document.getElementById("statusText");
     const startBtn = document.getElementById("startButton");
+    const stopBtn = document.getElementById("stopButton");
 
     if (!hasConfig) {
-        if (indicator) indicator.style.background = "#bbb";
+        if (indicator) {
+            indicator.style.background = "var(--text-muted, #64748b)";
+            indicator.classList.remove("pulse");
+        }
         if (statusText) statusText.textContent = "Конфиг не загружен";
-        if (startBtn) startBtn.disabled = true;
+        if (startBtn) {
+            startBtn.style.display = "inline-flex";
+            startBtn.disabled = true;
+        }
+        if (stopBtn) stopBtn.style.display = "none";
         return;
     }
 
     if (isRunning) {
-        if (indicator) indicator.style.background = "#4CAF50";
-        if (statusText) statusText.textContent = "Запущено";
-        if (startBtn) startBtn.disabled = true;
+        if (indicator) {
+            indicator.style.background = "var(--accent-emerald, #10b981)";
+            indicator.classList.add("pulse");
+        }
+        if (statusText) statusText.textContent = "В эфире";
+        if (startBtn) startBtn.style.display = "none";
+        if (stopBtn) {
+            stopBtn.style.display = "inline-flex";
+            stopBtn.disabled = false;
+        }
     } else {
-        if (indicator) indicator.style.background = "#f44336";
+        if (indicator) {
+            indicator.style.background = "var(--text-muted, #64748b)";
+            indicator.classList.remove("pulse");
+        }
         if (statusText) statusText.textContent = "Остановлено";
-        if (startBtn) startBtn.disabled = false;
+        if (startBtn) {
+            startBtn.style.display = "inline-flex";
+            startBtn.disabled = false;
+        }
+        if (stopBtn) stopBtn.style.display = "none";
     }
 }
 

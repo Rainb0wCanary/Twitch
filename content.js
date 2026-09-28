@@ -235,6 +235,350 @@ function findAndHighlightLink(searchText) {
     }
 }
 
+// Парсинг страницы инвентаря Drops (Twitch и Kick)
+function scrapeDropsInventory() {
+    try {
+        const host = (location && location.hostname) ? location.hostname.toLowerCase() : '';
+        const isKick = host.includes('kick.com');
+        const isTwitch = host.includes('twitch.tv');
+        if (!isKick && !isTwitch) {
+            return { ok: false, error: 'Вкладка не относится к Twitch или Kick: ' + location.href };
+        }
+
+        // 1. Раскрытие свернутых секций
+        try {
+            document.querySelectorAll('button[aria-expanded="false"]').forEach(btn => {
+                const txt = (btn.textContent || '').toLowerCase();
+                if (txt.includes('drop') || txt.includes('дроп') || txt.includes('rust') || txt.includes('campaign') || txt.includes('кампани')) {
+                    btn.click();
+                }
+            });
+        } catch(e) {}
+
+        const drops = [];
+        const processedKeys = new Set();
+
+        const addDrop = (name, streamers, percentage, isClaimed, canClaim, timeAgo = '') => {
+            const cleanStreamers = Array.from(new Set((streamers || []).map(s => (s || '').toLowerCase().trim()).filter(Boolean)));
+            const streamerKey = cleanStreamers.slice().sort().join('_');
+            const cleanName = (name || '').replace(/\s+/g, ' ').trim();
+            const nameKey = cleanName.toLowerCase().replace(/[^a-z0-9а-яё]/gi, '');
+            const key = streamerKey ? `${streamerKey}_${nameKey}` : nameKey;
+            if (!key || processedKeys.has(key)) return;
+            processedKeys.add(key);
+
+            drops.push({
+                name: cleanName || (cleanStreamers[0] ? `Drop (${cleanStreamers[0]})` : 'Reward'),
+                streamers: cleanStreamers,
+                percentage: isClaimed ? 100 : Math.min(100, Math.max(0, percentage || 0)),
+                isClaimed: !!isClaimed || percentage >= 100,
+                canClaim: !!canClaim,
+                timeAgo: timeAgo || ''
+            });
+        };
+
+        // 2. Сбор данных из React Fiber (если доступен в памяти)
+        try {
+            const rootEl = document.querySelector('#root') || document.body;
+            let fiber = null;
+            if (rootEl) {
+                for (const k in rootEl) {
+                    if (k.startsWith('__reactFiber$') || k.startsWith('__reactContainer$')) {
+                        fiber = rootEl[k];
+                        break;
+                    }
+                }
+            }
+            if (fiber) {
+                const visited = new Set();
+                const q = [fiber];
+                while (q.length > 0 && visited.size < 4000) {
+                    const node = q.shift();
+                    if (!node || visited.has(node)) continue;
+                    visited.add(node);
+
+                    const p = node.memoizedProps;
+                    if (p && typeof p === 'object') {
+                        const campaigns = p.campaigns || p.dropCampaigns || (p.inventory && p.inventory.campaigns);
+                        if (Array.isArray(campaigns)) {
+                            campaigns.forEach(c => {
+                                const timeDrops = c.timeBasedDrops || c.drops || [];
+                                const campStreamers = [];
+                                if (Array.isArray(c.channels)) c.channels.forEach(ch => ch.name && campStreamers.push(ch.name));
+                                if (c.allow && Array.isArray(c.allow.channels)) c.allow.channels.forEach(ch => ch.name && campStreamers.push(ch.name));
+
+                                timeDrops.forEach(d => {
+                                    const dName = d.name || (d.benefitEdges && d.benefitEdges[0] && d.benefitEdges[0].benefit && d.benefitEdges[0].benefit.name);
+                                    const reqMin = d.requiredMinutesWatched || 60;
+                                    const curMin = d.currentMinutesWatched || 0;
+                                    const isClaimed = !!d.isClaimed || (d.self && !!d.self.isClaimed);
+                                    const pct = isClaimed ? 100 : Math.min(100, Math.round((curMin / reqMin) * 100));
+
+                                    const dropStreamers = campStreamers.slice();
+                                    if (Array.isArray(d.channels)) d.channels.forEach(ch => ch.name && dropStreamers.push(ch.name));
+
+                                    if (dName) {
+                                        addDrop(dName, dropStreamers, pct, isClaimed, !isClaimed && pct >= 100);
+                                    }
+                                });
+                            });
+                        }
+                    }
+
+                    if (node.child) q.push(node.child);
+                    if (node.sibling) q.push(node.sibling);
+                }
+            }
+        } catch(e) {}
+
+        // 3. Парсинг DOM страниц (Twitch)
+        if (isTwitch) {
+            // Поиск всех блоков строк кампаний в инвентаре
+            const rowMarkers = Array.from(document.querySelectorAll('a, button, p, span, div')).filter(el => {
+                const t = (el.textContent || '').trim().toLowerCase();
+                return t === 'описание этого drop' || t === 'about this drop' || t.startsWith('описание этого drop') || t.startsWith('about this drop');
+            });
+
+            const candidateRows = new Set();
+            rowMarkers.forEach(marker => {
+                let curr = marker.parentElement;
+                while (curr && curr !== document.body) {
+                    if (curr.querySelector('img') && (curr.querySelector('[role="progressbar"]') || (curr.innerText || '').match(/\d+%/))) {
+                        candidateRows.add(curr);
+                        break;
+                    }
+                    curr = curr.parentElement;
+                }
+            });
+
+            // Также добавляем все прогресс-бары и локальные карточки наград
+            const allPbs = document.querySelectorAll('[role="progressbar"], [aria-valuenow]');
+            allPbs.forEach(pb => {
+                let card = pb.parentElement;
+                while (card && card !== document.body) {
+                    if (card.querySelectorAll('[role="progressbar"]').length > 1) break;
+                    if (card.querySelector('img') || (card.innerText || '').length > 5) {
+                        candidateRows.add(card);
+                        break;
+                    }
+                    card = card.parentElement;
+                }
+            });
+
+            // Добавляем карточки с кнопками Claim или бейджами Получено
+            document.querySelectorAll('button').forEach(btn => {
+                const txt = (btn.textContent || '').toLowerCase();
+                if (txt.includes('claim') || txt.includes('получить') || txt.includes('забрать')) {
+                    let card = btn.parentElement;
+                    while (card && card !== document.body) {
+                        if (card.querySelector('img') || (card.innerText || '').length > 5) {
+                            candidateRows.add(card);
+                            break;
+                        }
+                        card = card.parentElement;
+                    }
+                }
+            });
+
+            // Парсим каждый блок
+            candidateRows.forEach(row => {
+                const rowText = row.innerText || '';
+
+                // Извлечение стримеров из ссылок (/streamer) и текста (/streamer)
+                const streamers = new Set();
+                row.querySelectorAll('a[href]').forEach(a => {
+                    const href = (a.getAttribute('href') || '').trim();
+                    const m = href.match(/(?:twitch\.tv\/|^|\/)([a-zA-Z0-9_]{3,30})$/i);
+                    if (m) {
+                        const u = m[1].toLowerCase();
+                        const sys = ['directory', 'drops', 'inventory', 'campaigns', 'settings', 'subscriptions', 'wallet', 'messages', 'notifications', 'login', 'signup', 'videos', 'moderator', 'friends', 'search', 'p', 'about'];
+                        if (!sys.includes(u)) streamers.add(u);
+                    }
+                });
+                const slashMatches = [...rowText.matchAll(/\/([a-zA-Z0-9_]{3,30})/g)];
+                slashMatches.forEach(m => {
+                    const u = m[1].toLowerCase();
+                    const sys = ['directory', 'drops', 'inventory', 'campaigns', 'settings', 'subscriptions', 'wallet', 'messages', 'notifications', 'login', 'signup', 'videos', 'moderator', 'friends', 'search', 'p', 'about'];
+                    if (!sys.includes(u)) streamers.add(u);
+                });
+
+                // Процент просмотра
+                let percent = 0;
+                const pb = row.querySelector('[role="progressbar"], [aria-valuenow]');
+                if (pb) {
+                    const ariaVal = pb.getAttribute('aria-valuenow');
+                    if (ariaVal !== null && !isNaN(Number(ariaVal))) {
+                        percent = Math.min(100, Math.max(0, Math.round(Number(ariaVal))));
+                    }
+                }
+                const pctMatch = rowText.match(/(\d{1,3})\s*%/);
+                if (pctMatch) {
+                    percent = Math.max(percent, Math.min(100, parseInt(pctMatch[1], 10)));
+                }
+
+                // Завершение и Claim
+                const lowerText = rowText.toLowerCase();
+                const isClaimed = lowerText.includes('получено') || lowerText.includes('claimed');
+                let canClaim = false;
+                const claimBtn = Array.from(row.querySelectorAll('button')).find(b => {
+                    const txt = (b.textContent || '').toLowerCase();
+                    return txt.includes('claim') || txt.includes('получить') || txt.includes('забрать');
+                });
+                if (claimBtn) {
+                    canClaim = true;
+                    percent = 100;
+                    if (!claimBtn.disabled) {
+                        try { claimBtn.click(); } catch(e) {}
+                    }
+                }
+                if (isClaimed) percent = 100;
+
+                // Название дропа
+                let dropName = '';
+                const imgs = row.querySelectorAll('img[alt]');
+                for (const img of imgs) {
+                    const a = (img.alt || '').trim();
+                    if (a && a.length > 2 && !a.toLowerCase().includes('avatar') && !a.toLowerCase().includes('logo') && a.toLowerCase() !== 'rust') {
+                        dropName = a;
+                        break;
+                    }
+                }
+                if (!dropName) {
+                    const lines = rowText.split('\n').map(s => s.trim()).filter(Boolean);
+                    for (const line of lines) {
+                        const l = line.toLowerCase();
+                        if (line.length > 2 && line.length < 50 &&
+                            !line.includes('%') &&
+                            !line.match(/\d+:\d+/) &&
+                            !l.includes('дата') && !l.includes('date') &&
+                            !l.includes('описание') && !l.includes('about') &&
+                            !l.includes('зарабатываете') && !l.includes('увеличить') &&
+                            !l.includes('перейдите') && !l.includes('получить') &&
+                            !l.includes('получено') && !l.includes('claimed') &&
+                            !l.includes('drops') && !l.includes('награды') &&
+                            !l.includes('gmt') && !l.includes('utc')) {
+                            dropName = line;
+                            break;
+                        }
+                    }
+                }
+
+                if (dropName || streamers.size > 0) {
+                    addDrop(dropName, Array.from(streamers), percent, isClaimed, canClaim);
+                }
+            });
+
+            // Парсинг уже полученных наград (секция "Получено" / "Claimed")
+            const claimedImgs = document.querySelectorAll('img.inventory-drop-image, img[src*="twitch-quests-assets/REWARD"], img[alt*="Drop"], img[alt*="drop"]');
+            claimedImgs.forEach(img => {
+                let card = img.parentElement;
+                for (let i = 0; i < 6 && card && card !== document.body; i++) {
+                    if (card.querySelector('p, span') && (card.innerText || '').length > 3) {
+                        break;
+                    }
+                    card = card.parentElement;
+                }
+                if (!card) card = img.parentElement;
+
+                let dropName = '';
+                const alt = (img.getAttribute('alt') || '').trim();
+                if (alt) {
+                    dropName = alt.replace(/^(?:Изображение\s+Drop\s+для|Drop\s+image\s+for|Reward\s+image\s+for)\s*/i, '').trim();
+                }
+                if (!dropName && card) {
+                    const titleEl = card.querySelector('p.tw-strong, p[class*="strong"], [class*="title"], h5, h6, strong');
+                    if (titleEl) dropName = titleEl.textContent.trim();
+                }
+                if (!dropName && card) {
+                    const lines = (card.innerText || '').split('\n').map(s => s.trim()).filter(Boolean);
+                    for (const line of lines) {
+                        const l = line.toLowerCase();
+                        if (line.length > 2 && line.length < 50 &&
+                            !line.includes('%') && !line.match(/\d+:\d+/) &&
+                            !l.includes('назад') && !l.includes('ago') &&
+                            !l.includes('вчера') && !l.includes('yesterday') &&
+                            !l.includes('получено') && !l.includes('claimed') &&
+                            !l.includes('drops')) {
+                            dropName = line;
+                            break;
+                        }
+                    }
+                }
+
+                let timeAgo = '';
+                if (card) {
+                    const cardText = card.innerText || '';
+                    const timeMatch = cardText.match(/(\d+\s*(?:час|мин|день|дня|дней|hour|min|day|вчера|yesterday|месяц|month|год|year)[^\n]*)/i);
+                    if (timeMatch) timeAgo = timeMatch[1].trim();
+                }
+
+                if (dropName) {
+                    addDrop(dropName, [], 100, true, false, timeAgo);
+                }
+            });
+        } else if (isKick) {
+            // Kick Drops Inventory
+            const progressBars = document.querySelectorAll('[role="progressbar"], progress, [class*="progress"], [aria-valuenow]');
+            progressBars.forEach(pb => {
+                let card = pb.parentElement;
+                while (card && card !== document.body) {
+                    if (card.querySelectorAll('[role="progressbar"]').length > 1) break;
+                    if (card.querySelector('img') || (card.innerText || '').length > 5) break;
+                    card = card.parentElement;
+                }
+                if (!card) card = pb.parentElement;
+
+                let percent = 0;
+                const ariaVal = pb.getAttribute('aria-valuenow') || pb.value;
+                if (ariaVal !== null && !isNaN(Number(ariaVal))) {
+                    percent = Math.min(100, Math.max(0, Math.round(Number(ariaVal))));
+                } else if (card) {
+                    const textMatch = (card.innerText || '').match(/(\d{1,3})\s*%/);
+                    if (textMatch) percent = Math.min(100, parseInt(textMatch[1], 10));
+                }
+
+                const cardText = card ? (card.innerText || '') : '';
+                const isClaimed = cardText.toLowerCase().includes('claimed') || cardText.toLowerCase().includes('получено');
+                const claimBtn = card ? card.querySelector('button') : null;
+                if (claimBtn && claimBtn.textContent && claimBtn.textContent.toLowerCase().includes('claim')) {
+                    try { claimBtn.click(); } catch(e) {}
+                }
+
+                let dropName = '';
+                if (card) {
+                    const titleEl = card.querySelector('h2, h3, h4, h5, [class*="title"], [class*="name"]');
+                    if (titleEl) dropName = titleEl.textContent.trim();
+                }
+
+                const streamers = [];
+                if (card) {
+                    card.querySelectorAll('a[href]').forEach(a => {
+                        const href = a.getAttribute('href') || '';
+                        const m = href.match(/kick\.com\/([a-zA-Z0-9_]{3,30})$/i) || href.match(/^\/([a-zA-Z0-9_]{3,30})$/i);
+                        if (m && !['drops', 'categories', 'inventory'].includes(m[1].toLowerCase())) {
+                            streamers.push(m[1].toLowerCase());
+                        }
+                    });
+                }
+
+                addDrop(dropName, streamers, percent, isClaimed, !isClaimed && percent >= 100);
+            });
+        }
+
+        const isLoggedOut = !!document.querySelector('button[data-a-target="login-button"]');
+
+        return {
+            ok: true,
+            platform: isKick ? 'kick' : 'twitch',
+            drops,
+            totalFound: drops.length,
+            isLoggedOut
+        };
+    } catch(err) {
+        return { ok: false, error: String(err) };
+    }
+}
+
 // Обработчик сообщений с обработкой ошибок
 try {
     chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
@@ -242,12 +586,14 @@ try {
             if (request.action === "findLink") {
                 let result = findAndHighlightLink(request.text);
                 sendResponse(result);
+            } else if (request.action === "scrapeInventory") {
+                let result = scrapeDropsInventory();
+                sendResponse(result);
             }
         } catch (err) {
             console.error("Ошибка в content.js при обработке сообщения:", err);
             sendResponse({ found: false, error: String(err) });
         }
-        // Для поддержки асинхронных ответов (но здесь не требуется)
         return false;
     });
 } catch (err) {
@@ -293,16 +639,28 @@ function collectAndSendDiagnostic() {
     }
 }
 
+function autoSendInventory() {
+    if (location.href.includes('/drops/inventory')) {
+        const inv = scrapeDropsInventory();
+        if (inv && inv.ok && inv.drops.length > 0) {
+            try {
+                chrome.runtime.sendMessage({ action: "inventoryScraped", platform: inv.platform, drops: inv.drops });
+            } catch(e) {}
+        }
+    }
+}
+
 // отправляем при load и через небольшой таймаут (DOM динамический)
 try {
     window.addEventListener('load', () => {
         collectAndSendDiagnostic();
-        setTimeout(collectAndSendDiagnostic, 2000);
-        setTimeout(collectAndSendDiagnostic, 5000);
+        autoSendInventory();
+        setTimeout(() => { collectAndSendDiagnostic(); autoSendInventory(); }, 2000);
+        setTimeout(() => { collectAndSendDiagnostic(); autoSendInventory(); }, 5000);
     });
     // также отправим сразу, если скрипт подключился после загрузки
     if (document.readyState === 'complete' || document.readyState === 'interactive') {
-        setTimeout(collectAndSendDiagnostic, 200);
+        setTimeout(() => { collectAndSendDiagnostic(); autoSendInventory(); }, 300);
     }
 } catch (e) {
     console.error('Не удалось зарегистрировать отправку диагностики:', e);

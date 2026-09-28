@@ -2,65 +2,164 @@
 <html lang="ru">
 <head>
     <meta charset="UTF-8">
-    <title>Статистика и логи</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Twitch Drops Hub</title>
     <link rel="stylesheet" href="styles.css">
 </head>
-<body>
-    <div class="container">
-        <div class="page-header">
-            <h2>Статистика просмотра</h2>
-            <div class="header-actions">
-                <button id="createNewGroup" class="btn btn-primary">+ Создать новую группу</button>
-            </div>
-        </div>
-
-        <!-- Настройки бота / параметров -->
-        <div id="configForm" class="card config-card">
-            <div class="config-grid">
-                <label>
-                    <span>URL категории поиска:</span>
-                    <input id="searchUrlPartInput" type="text" placeholder="https://www.twitch.tv/directory/category/...">
-                </label>
-                <label>
-                    <span>Интервал (мин):</span>
-                    <input id="checkIntervalMinutesInput" type="number" min="1" placeholder="1">
-                </label>
-                <label>
-                    <span>Ожидание перед проверкой (сек):</span>
-                    <input id="waitBeforeCheckInput" type="number" min="0" placeholder="20">
-                </label>
-                <label>
-                    <span>Макс. попыток:</span>
-                    <input id="maxAttemptsInput" type="number" min="1" placeholder="5">
-                </label>
-                <label>
-                    <span>Временный бан (H.MM.SS):</span>
-                    <input id="tempBlacklistSecondsInput" type="text" placeholder="0.05.00">
-                </label>
-                <div class="config-submit">
-                    <button id="saveConfigFormButton" class="btn btn-accent">Сохранить настройки</button>
+<body class="dark-theme">
+    <div class="app-container">
+        <!-- Верхняя шапка приложения -->
+        <header class="navbar">
+            <div class="brand">
+                <div class="brand-logo">
+                    <svg class="twitch-svg" viewBox="0 0 24 28" fill="currentColor">
+                        <path d="m19 6-2-2H3v20h5v4l4-4h4l6-6V6h-3zm1 11-3 3h-4l-3 3v-3H6V6h14v11z"/>
+                        <path d="M16 10h2v5h-2zm-5 0h2v5h-2z"/>
+                    </svg>
+                </div>
+                <div class="brand-text">
+                    <h1 class="brand-title">Twitch Drops <span class="brand-badge">HUB</span></h1>
+                    <span class="brand-sub">Автоматический просмотр и фарм наград</span>
                 </div>
             </div>
-        </div>
 
-        <!-- Контейнер карточек групп дропсов -->
-        <div id="groupsContainer" class="groups-container"></div>
+            <div class="header-actions">
+                <button id="syncInventoryBtn" class="btn btn-success" title="Сверить прогресс с инвентарём Twitch / Kick">
+                    <span class="btn-icon">🔄</span> Инвентарь
+                </button>
+                <button id="autoSortPriorityBtn" class="btn btn-accent" title="Умная сортировка: в прогрессе (по %) → 0% → 100% внизу">
+                    <span class="btn-icon">⚡</span> Авто-приоритет
+                </button>
+                <button id="toggleSettingsBtn" class="btn btn-surface" title="Параметры и настройки бота">
+                    <span class="btn-icon">⚙️</span> Настройки
+                </button>
+            </div>
+        </header>
 
-        <!-- Логи -->
-        <div class="page-header" style="margin-top:24px;">
-            <h2>Логи работы</h2>
-        </div>
-        <div id="log" class="card log-card"></div>
-        <div class="log-controls">
-            <button id="clearLogsButton" class="btn btn-primary">Очистить логи</button>
-            <button id="deleteConfigButton" class="btn btn-danger">Удалить конфиг из хранилища</button>
-            <button id="uploadConfigButton" class="btn btn-accent">Загрузить JSON конфиг</button>
-            <input type="file" id="configFileInput" accept=".json" style="display:none;">
-            <label class="logs-checkbox-label">
-                <input type="checkbox" id="toggleLogsCheckbox" checked> Вести логирование
-            </label>
-        </div>
+        <!-- Сводная панель статистики -->
+        <section class="stats-overview">
+            <div class="stat-card">
+                <div class="stat-icon stat-icon-purple">📦</div>
+                <div class="stat-content">
+                    <span class="stat-label">Всего дропов</span>
+                    <span id="statTotalDrops" class="stat-number">0</span>
+                </div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-icon stat-icon-amber">⏳</div>
+                <div class="stat-content">
+                    <span class="stat-label">В прогрессе</span>
+                    <span id="statInProgress" class="stat-number">0</span>
+                </div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-icon stat-icon-emerald">✅</div>
+                <div class="stat-content">
+                    <span class="stat-label">Завершено</span>
+                    <span id="statCompleted" class="stat-number">0</span>
+                </div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-icon stat-icon-cyan">⏱️</div>
+                <div class="stat-content">
+                    <span class="stat-label">Накопленное время</span>
+                    <span id="statTotalTime" class="stat-number">0:00:00</span>
+                </div>
+            </div>
+        </section>
+
+        <!-- Компактная выдвижная панель настроек бота -->
+        <section id="configSection" class="config-panel collapsed">
+            <div class="config-panel-inner">
+                <div class="config-header">
+                    <div class="config-title">
+                        <span>⚙️</span> Настройки и управление кампаниями
+                    </div>
+                    <button id="closeSettingsBtn" class="btn-close" title="Скрыть панель настроек">✕</button>
+                </div>
+
+                <!-- Быстрые действия: импорт кампаний и создание групп -->
+                <div class="config-actions-bar">
+                    <div class="config-actions-group">
+                        <span class="config-bar-label">Кампании Facepunch:</span>
+                        <div class="segmented-control">
+                            <button id="importTwitchFacepunchBtn" class="btn btn-segmented" title="Импорт кампании с twitch.facepunch.com">
+                                <span>📥 Twitch</span>
+                            </button>
+                            <button id="importKickFacepunchBtn" class="btn btn-segmented" title="Импорт кампании с kick.facepunch.com">
+                                <span>📥 Kick</span>
+                            </button>
+                        </div>
+                    </div>
+                    <button id="createNewGroup" class="btn btn-primary btn-sm" title="Создать новую группу дропа вручную">
+                        <span class="btn-icon">+</span> Новая группа
+                    </button>
+                </div>
+
+                <div id="configForm" class="config-grid">
+                    <label class="config-field config-span-2">
+                        <span>URL категории поиска (например, Rust):</span>
+                        <input id="searchUrlPartInput" type="text" placeholder="https://www.twitch.tv/directory/category/rust">
+                    </label>
+                    <label class="config-field">
+                        <span>Интервал проверки (мин):</span>
+                        <input id="checkIntervalMinutesInput" type="number" min="1" placeholder="1">
+                    </label>
+                    <label class="config-field">
+                        <span>Ожидание перед проверкой (сек):</span>
+                        <input id="waitBeforeCheckInput" type="number" min="0" placeholder="20">
+                    </label>
+                    <label class="config-field">
+                        <span>Макс. попыток:</span>
+                        <input id="maxAttemptsInput" type="number" min="1" placeholder="5">
+                    </label>
+                    <label class="config-field">
+                        <span>Временный бан (H.MM.SS):</span>
+                        <input id="tempBlacklistSecondsInput" type="text" placeholder="0.05.00">
+                    </label>
+                </div>
+
+                <div class="config-footer">
+                    <div class="config-secondary-actions">
+                        <button id="uploadConfigButton" class="btn btn-surface btn-sm" title="Загрузить config.json">
+                            📁 Загрузить JSON
+                        </button>
+                        <input type="file" id="configFileInput" accept=".json" style="display:none;">
+                        <button id="deleteConfigButton" class="btn btn-danger-outline btn-sm" title="Удалить конфиг из браузера">
+                            🗑️ Очистить конфиг
+                        </button>
+                    </div>
+                    <button id="saveConfigFormButton" class="btn btn-primary">
+                        💾 Сохранить параметры
+                    </button>
+                </div>
+            </div>
+        </section>
+
+        <!-- Список карточек групп дропсов -->
+        <main class="main-content">
+            <div id="groupsContainer" class="groups-container"></div>
+        </main>
+
+        <!-- Системный журнал логов (сворачиваемый) -->
+        <footer class="logs-section">
+            <div class="logs-header">
+                <div class="logs-title-area" id="toggleLogsCollapse" title="Нажмите, чтобы свернуть/развернуть логи">
+                    <span class="logs-toggle-arrow">▼</span>
+                    <span class="logs-title">📋 Системный журнал</span>
+                </div>
+                <div class="logs-controls">
+                    <label class="logs-checkbox-label">
+                        <input type="checkbox" id="toggleLogsCheckbox" checked>
+                        <span>Логирование</span>
+                    </label>
+                    <button id="clearLogsButton" class="btn btn-surface btn-xs">Очистить</button>
+                </div>
+            </div>
+            <div id="log" class="card log-card"></div>
+        </footer>
     </div>
+
     <script src="stats.js"></script>
 </body>
 </html>

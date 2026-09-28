@@ -2,37 +2,64 @@
 <html lang="ru">
 <head>
     <meta charset="UTF-8">
-    <title>Управление просмотром</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Twitch Drops Watcher</title>
     <link rel="stylesheet" href="styles.css">
 </head>
-<body>
-    <div class="popup-root compact">
+<body class="popup-body dark-theme">
+    <div class="popup-root">
+        <!-- Шапка попапа -->
         <div class="popup-header">
-            <div class="status-row">
-                <span id="statusIndicator" class="status-indicator"></span>
-                <span id="statusText" class="status-text">Статус неизвестен</span>
+            <div class="popup-brand">
+                <svg class="twitch-svg-sm" viewBox="0 0 24 28" fill="currentColor">
+                    <path d="m19 6-2-2H3v20h5v4l4-4h4l6-6V6h-3zm1 11-3 3h-4l-3 3v-3H6V6h14v11z"/>
+                    <path d="M16 10h2v5h-2zm-5 0h2v5h-2z"/>
+                </svg>
+                <span class="popup-app-title">Twitch Drops</span>
             </div>
-            <div class="popup-title">Twitch watcher</div>
+            <div class="status-pill">
+                <span id="statusIndicator" class="status-indicator"></span>
+                <span id="statusText" class="status-text">Остановлено</span>
+            </div>
         </div>
 
-        <button id="startButton" class="btn btn-primary btn-icon round"><span class="btn-icon">▶</span> <span>Старт просмотра</span></button>
-
-        <div class="controls">
-            <button id="prevButton" class="btn small btn-icon">◀</button>
-            <button id="stopButton" class="btn btn-danger big btn-icon">Стоп</button>
-            <button id="nextButton" class="btn small btn-icon">▶</button>
+        <!-- Карточка активного стрима / таймера -->
+        <div id="currentTimer" class="timer-box">
+            <div class="timer-idle">
+                <span class="timer-idle-icon">💤</span>
+                <span class="timer-idle-text">Нет активного стрима</span>
+            </div>
         </div>
 
-        <div id="currentTimer"></div>
+        <!-- Панель управления плеером -->
+        <div class="player-controls">
+            <button id="prevButton" class="btn btn-control" title="Предыдущий канал">
+                <span>⏮</span>
+            </button>
+            <button id="startButton" class="btn btn-primary btn-play-main" title="Запустить автопросмотр">
+                <span class="play-icon">▶</span>
+                <span>Старт</span>
+            </button>
+            <button id="stopButton" class="btn btn-danger btn-play-main" title="Остановить просмотр" style="display:none;">
+                <span class="play-icon">⏹</span>
+                <span>Стоп</span>
+            </button>
+            <button id="nextButton" class="btn btn-control" title="Следующий канал">
+                <span>⏭</span>
+            </button>
+        </div>
 
-        <button id="uploadConfigButton" class="btn btn-accent round" style="width:90%;margin-top:8px;font-size:12px;">📁 Загрузить config.json</button>
-        <input type="file" id="configFileInput" accept=".json" style="display:none;">
-
+        <!-- Футер попапа -->
         <div class="popup-footer">
-            <a href="stats.html" target="_blank" class="link-muted">Статистика и логи</a>
-            <div style="font-size:12px;color:var(--muted)">v1.2.0</div>
+            <a href="stats.html" target="_blank" class="popup-hub-link" title="Открыть страницу статистики и управления дропами">
+                <span>📊</span> Панель дропов →
+            </a>
+            <div class="popup-footer-sub">
+                <span class="version-tag">v1.3</span>
+            </div>
         </div>
     </div>
+
     <script src="popup.js"></script>
 </body>
 </html>
