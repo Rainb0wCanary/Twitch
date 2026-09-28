@@ -245,7 +245,9 @@ function renderCardsView() {
                 const isBlockedNow = isPermanent || msLeft > 0;
 
                 let statusBadge = '<span class="channel-status status-badge-active">● Активен</span>';
-                if (isPermanent) {
+                if (targetSeconds > 0 && groupTotalTime >= targetSeconds) {
+                    statusBadge = '<span class="channel-status status-badge-completed" title="Цель группы достигнута">✓ Завершён</span>';
+                } else if (isPermanent) {
                     statusBadge = '<span class="channel-status status-badge-permanent" title="Канал заблокирован навсегда">⛔ ЧС (навсегда)</span>';
                 } else if (isBlockedNow) {
                     statusBadge = `<span class="channel-status status-badge-blacklist" title="Осталось: ${msToHMS(msLeft)}">⏳ В ЧС (${msToHMS(msLeft)})</span>`;
@@ -309,8 +311,11 @@ function renderCardsView() {
                 const msLeft = (!isPermanent && isBlocked) ? (blacklist[url] - now) : 0;
                 const isBlockedNow = isPermanent || msLeft > 0;
 
+                const targetSec = parseTimeToSeconds(item.watchTime || config.watchTime);
                 let statusBadge = '<span class="channel-status status-badge-active">● Активен</span>';
-                if (isPermanent) {
+                if (targetSec > 0 && watched >= targetSec) {
+                    statusBadge = '<span class="channel-status status-badge-completed" title="Цель достигнута">✓ Завершён</span>';
+                } else if (isPermanent) {
                     statusBadge = '<span class="channel-status status-badge-permanent">⛔ ЧС (навсегда)</span>';
                 } else if (isBlockedNow) {
                     statusBadge = `<span class="channel-status status-badge-blacklist">⏳ В ЧС (${msToHMS(msLeft)})</span>`;
@@ -404,8 +409,9 @@ function attachCardHandlers(sortedGroupIds) {
     document.querySelectorAll('.edit-group-btn').forEach(btn => {
         btn.addEventListener('click', () => {
             const dropId = btn.getAttribute('data-dropid');
-            chrome.storage.local.get('userConfig', (data) => {
+            chrome.storage.local.get(['userConfig', 'totalWatched'], (data) => {
                 const config = data.userConfig || { channels: [] };
+                const totalWatched = data.totalWatched || {};
                 const groupChannel = config.channels.find(ch => typeof ch === 'object' && ch.dropId === dropId);
                 const currentWatch = groupChannel ? (groupChannel.watchTime || '1:00:00') : '1:00:00';
 
@@ -414,9 +420,15 @@ function attachCardHandlers(sortedGroupIds) {
                 const newWatchTime = showPrompt('Изменить целевое время группы (H:MM:SS):', currentWatch);
                 if (!newWatchTime) return;
 
+                if (typeof config.blacklist !== 'object' || Array.isArray(config.blacklist)) config.blacklist = {};
+
+                const newTargetSec = parseTimeToSeconds(newWatchTime);
+                let groupWatched = 0;
+
                 // Обновляем каналы группы
                 config.channels = config.channels.map(ch => {
                     if (typeof ch === 'object' && ch.dropId === dropId) {
+                        groupWatched += (totalWatched[ch.url] || 0);
                         return { ...ch, dropId: newDropId, watchTime: newWatchTime };
                     }
                     return ch;
@@ -425,6 +437,21 @@ function attachCardHandlers(sortedGroupIds) {
                 // Обновляем groupOrder
                 if (Array.isArray(config.groupOrder)) {
                     config.groupOrder = config.groupOrder.map(id => id === dropId ? newDropId : id);
+                }
+
+                // Проверяем: если новое время просмотра уже достигнуто, помечаем группу в ЧС как завершенную
+                const groupChannels = config.channels.filter(ch => typeof ch === 'object' && ch.dropId === newDropId);
+                if (newTargetSec > 0 && groupWatched >= newTargetSec) {
+                    groupChannels.forEach(ch => {
+                        config.blacklist[ch.url] = 'permanent';
+                    });
+                } else if (newTargetSec > groupWatched) {
+                    // Если время увеличили, разблокируем каналы группы, если они были заблокированы перманентно
+                    groupChannels.forEach(ch => {
+                        if (config.blacklist[ch.url] === 'permanent') {
+                            delete config.blacklist[ch.url];
+                        }
+                    });
                 }
 
                 chrome.storage.local.set({ userConfig: config }, () => {
@@ -443,14 +470,18 @@ function attachCardHandlers(sortedGroupIds) {
             chrome.storage.local.get(['userConfig', 'totalWatched'], (data) => {
                 const config = data.userConfig || { channels: [] };
                 const totalWatched = data.totalWatched || {};
+                if (typeof config.blacklist !== 'object' || Array.isArray(config.blacklist)) config.blacklist = {};
 
                 config.channels.forEach(ch => {
                     if (typeof ch === 'object' && ch.dropId === dropId) {
                         totalWatched[ch.url] = 0;
+                        if (config.blacklist[ch.url] === 'permanent') {
+                            delete config.blacklist[ch.url];
+                        }
                     }
                 });
 
-                chrome.storage.local.set({ totalWatched }, () => {
+                chrome.storage.local.set({ userConfig: config, totalWatched }, () => {
                     renderCardsView();
                 });
             });
@@ -600,7 +631,17 @@ function attachCardHandlers(sortedGroupIds) {
     document.querySelectorAll('.reset-channel-btn').forEach(btn => {
         btn.addEventListener('click', () => {
             const url = btn.getAttribute('data-url');
-            resetWatchTime(url);
+            chrome.storage.local.get('userConfig', (data) => {
+                const config = data.userConfig || {};
+                if (config.blacklist && config.blacklist[url] === 'permanent') {
+                    delete config.blacklist[url];
+                    chrome.storage.local.set({ userConfig: config }, () => {
+                        resetWatchTime(url);
+                    });
+                } else {
+                    resetWatchTime(url);
+                }
+            });
         });
     });
 
@@ -608,8 +649,9 @@ function attachCardHandlers(sortedGroupIds) {
     document.querySelectorAll('.edit-channel-btn').forEach(btn => {
         btn.addEventListener('click', () => {
             const url = btn.getAttribute('data-url');
-            chrome.storage.local.get('userConfig', (data) => {
+            chrome.storage.local.get(['userConfig', 'totalWatched'], (data) => {
                 const config = data.userConfig || { channels: [] };
+                const totalWatched = data.totalWatched || {};
                 const idx = config.channels.findIndex(ch => (typeof ch === 'string' ? ch : ch.url) === url);
                 if (idx === -1) return;
 
@@ -623,11 +665,45 @@ function attachCardHandlers(sortedGroupIds) {
                 const newWatch = showPrompt('Целевое время (H:MM:SS) или пусто для значения по умолчанию:', curWatch);
                 const newDrop = showPrompt('ID группы дропа (или пусто для одиночного канала):', curDrop);
 
+                const normalizedUrl = normalizeChannelUrl(newUrl);
+                if (typeof config.blacklist !== 'object' || Array.isArray(config.blacklist)) config.blacklist = {};
+
+                if (normalizedUrl !== curUrl) {
+                    if (totalWatched[curUrl] !== undefined) {
+                        totalWatched[normalizedUrl] = totalWatched[curUrl];
+                        delete totalWatched[curUrl];
+                        chrome.storage.local.set({ totalWatched });
+                    }
+                    if (config.blacklist[curUrl] !== undefined) {
+                        config.blacklist[normalizedUrl] = config.blacklist[curUrl];
+                        delete config.blacklist[curUrl];
+                    }
+                }
+
                 config.channels[idx] = {
-                    url: normalizeChannelUrl(newUrl),
+                    url: normalizedUrl,
                     ...(newWatch && { watchTime: newWatch }),
                     ...(newDrop && { dropId: newDrop })
                 };
+
+                const targetSec = parseTimeToSeconds(newWatch || config.watchTime);
+                const dropId = newDrop || (typeof current === 'object' ? current.dropId : null);
+                let watchedSec = 0;
+                if (dropId) {
+                    config.channels.forEach(ch => {
+                        if (typeof ch === 'object' && ch.dropId === dropId) {
+                            watchedSec += (totalWatched[ch.url] || 0);
+                        }
+                    });
+                } else {
+                    watchedSec = totalWatched[normalizedUrl] || 0;
+                }
+
+                if (targetSec > 0 && watchedSec >= targetSec) {
+                    config.blacklist[normalizedUrl] = 'permanent';
+                } else if (targetSec > watchedSec && config.blacklist[normalizedUrl] === 'permanent') {
+                    delete config.blacklist[normalizedUrl];
+                }
 
                 chrome.storage.local.set({ userConfig: config }, () => renderCardsView());
             });
@@ -656,14 +732,20 @@ function attachCardHandlers(sortedGroupIds) {
             chrome.storage.local.get(['userConfig', 'totalWatched'], (data) => {
                 const config = data.userConfig || { channels: [] };
                 const totalWatched = data.totalWatched || {};
+                if (typeof config.blacklist !== 'object' || Array.isArray(config.blacklist)) config.blacklist = {};
 
                 config.channels.forEach(ch => {
                     const url = typeof ch === 'string' ? ch : ch.url;
                     const dropId = typeof ch === 'object' ? ch.dropId : null;
-                    if (!dropId) totalWatched[url] = 0;
+                    if (!dropId) {
+                        totalWatched[url] = 0;
+                        if (config.blacklist[url] === 'permanent') {
+                            delete config.blacklist[url];
+                        }
+                    }
                 });
 
-                chrome.storage.local.set({ totalWatched }, () => renderCardsView());
+                chrome.storage.local.set({ userConfig: config, totalWatched }, () => renderCardsView());
             });
         });
     }
