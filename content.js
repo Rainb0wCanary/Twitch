@@ -280,7 +280,7 @@ function findAndHighlightLink(searchText) {
 }
 
 // Парсинг страницы инвентаря Drops (Twitch и Kick)
-function scrapeDropsInventory() {
+async function scrapeDropsInventory() {
     try {
         const host = (location && location.hostname) ? location.hostname.toLowerCase() : '';
         const isKick = host.includes('kick.com');
@@ -297,6 +297,69 @@ function scrapeDropsInventory() {
                     btn.click();
                 }
             });
+        } catch(e) {}
+
+        // 1.1. Раскрытие скрытых полученных наград в секции "Получено" / "Claimed"
+        try {
+            for (let iter = 0; iter < 6; iter++) {
+                // Ищем заголовок секции "Получено" / "Claimed"
+                const headings = Array.from(document.querySelectorAll('h1, h2, h3, h4, h5, h6, div, p, span'));
+                const claimedHeading = headings.find(el => {
+                    const t = (el.textContent || '').trim().toLowerCase();
+                    return t === 'получено' || t === 'claimed' || t === 'полученные награды' || t === 'claimed drops';
+                });
+
+                let claimedSection = claimedHeading ? claimedHeading.parentElement : null;
+                while (claimedSection && claimedSection !== document.body) {
+                    if (claimedSection.querySelector('.tw-tower, [class*="tw-tower"]') || claimedSection.querySelector('img.inventory-drop-image')) {
+                        break;
+                    }
+                    claimedSection = claimedSection.parentElement;
+                }
+
+                const scope = claimedSection || document;
+                const buttons = Array.from(scope.querySelectorAll('button, [role="button"]'));
+                const loadMoreBtn = buttons.find(b => {
+                    if (!b || b.disabled || b.getAttribute('aria-disabled') === 'true') return false;
+                    const txt = (b.textContent || '').replace(/\s+/g, ' ').trim().toLowerCase();
+                    const target = (b.getAttribute('data-a-target') || '').toLowerCase();
+                    const hasLabel = !!b.querySelector('[data-a-target="tw-core-button-label-text"]');
+
+                    return txt.includes('загрузить еще') ||
+                           txt.includes('загрузить ещё') ||
+                           txt.includes('load more') ||
+                           txt.includes('show more') ||
+                           txt.includes('показать еще') ||
+                           txt.includes('показать ещё') ||
+                           target.includes('load-more') ||
+                           (hasLabel && (txt.includes('загрузить') || txt.includes('load')));
+                });
+
+                if (!loadMoreBtn) break;
+
+                const getCardsCount = () => scope.querySelectorAll('img.inventory-drop-image, img[src*="twitch-quests-assets/REWARD"], img[alt*="Drop"], img[alt*="drop"]').length;
+                const prevCount = getCardsCount();
+
+                const labelEl = loadMoreBtn.querySelector('[data-a-target="tw-core-button-label-text"]') || loadMoreBtn;
+                try {
+                    loadMoreBtn.click();
+                    if (labelEl !== loadMoreBtn) labelEl.click();
+                    labelEl.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+                    loadMoreBtn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+                } catch(e) {
+                    break;
+                }
+
+                let loadedNew = false;
+                for (let w = 0; w < 15; w++) {
+                    await new Promise(r => setTimeout(r, 200));
+                    if (getCardsCount() > prevCount) {
+                        loadedNew = true;
+                        break;
+                    }
+                }
+                if (!loadedNew) break;
+            }
         } catch(e) {}
 
         const drops = [];
@@ -631,12 +694,17 @@ try {
                 let result = findAndHighlightLink(request.text);
                 sendResponse(result);
             } else if (request.action === "scrapeInventory") {
-                let result = scrapeDropsInventory();
-                sendResponse(result);
+                scrapeDropsInventory().then(result => {
+                    sendResponse(result);
+                }).catch(err => {
+                    sendResponse({ ok: false, error: String(err) });
+                });
+                return true;
             }
         } catch (err) {
             console.error("Ошибка в content.js при обработке сообщения:", err);
             sendResponse({ found: false, error: String(err) });
+            return false;
         }
         return false;
     });
@@ -644,14 +712,19 @@ try {
     console.error("Ошибка при регистрации onMessage в content.js:", err);
 }
 
-
-function autoSendInventory() {
+let isAutoSendingInventory = false;
+async function autoSendInventory() {
     if (location.href.includes('/drops/inventory')) {
-        const inv = scrapeDropsInventory();
-        if (inv && inv.ok && inv.drops.length > 0) {
-            try {
+        if (isAutoSendingInventory) return;
+        isAutoSendingInventory = true;
+        try {
+            const inv = await scrapeDropsInventory();
+            if (inv && inv.ok && Array.isArray(inv.drops) && inv.drops.length > 0) {
                 chrome.runtime.sendMessage({ action: "inventoryScraped", platform: inv.platform, drops: inv.drops });
-            } catch(e) {}
+            }
+        } catch(e) {
+        } finally {
+            isAutoSendingInventory = false;
         }
     }
 }

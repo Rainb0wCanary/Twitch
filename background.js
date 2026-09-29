@@ -1519,7 +1519,7 @@ function syncFacepunchMedia(callback) {
 // =========================================================
 
 // Функция для прямого выполнения внутри вкладки инвентаря
-function scrapeDropsInventoryInPage() {
+async function scrapeDropsInventoryInPage() {
     try {
         const host = (location && location.hostname) ? location.hostname.toLowerCase() : '';
         const isKick = host.includes('kick.com');
@@ -1536,6 +1536,69 @@ function scrapeDropsInventoryInPage() {
                     btn.click();
                 }
             });
+        } catch(e) {}
+
+        // 1.1. Раскрытие скрытых полученных наград в секции "Получено" / "Claimed"
+        try {
+            for (let iter = 0; iter < 6; iter++) {
+                // Ищем заголовок секции "Получено" / "Claimed"
+                const headings = Array.from(document.querySelectorAll('h1, h2, h3, h4, h5, h6, div, p, span'));
+                const claimedHeading = headings.find(el => {
+                    const t = (el.textContent || '').trim().toLowerCase();
+                    return t === 'получено' || t === 'claimed' || t === 'полученные награды' || t === 'claimed drops';
+                });
+
+                let claimedSection = claimedHeading ? claimedHeading.parentElement : null;
+                while (claimedSection && claimedSection !== document.body) {
+                    if (claimedSection.querySelector('.tw-tower, [class*="tw-tower"]') || claimedSection.querySelector('img.inventory-drop-image')) {
+                        break;
+                    }
+                    claimedSection = claimedSection.parentElement;
+                }
+
+                const scope = claimedSection || document;
+                const buttons = Array.from(scope.querySelectorAll('button, [role="button"]'));
+                const loadMoreBtn = buttons.find(b => {
+                    if (!b || b.disabled || b.getAttribute('aria-disabled') === 'true') return false;
+                    const txt = (b.textContent || '').replace(/\s+/g, ' ').trim().toLowerCase();
+                    const target = (b.getAttribute('data-a-target') || '').toLowerCase();
+                    const hasLabel = !!b.querySelector('[data-a-target="tw-core-button-label-text"]');
+
+                    return txt.includes('загрузить еще') ||
+                           txt.includes('загрузить ещё') ||
+                           txt.includes('load more') ||
+                           txt.includes('show more') ||
+                           txt.includes('показать еще') ||
+                           txt.includes('показать ещё') ||
+                           target.includes('load-more') ||
+                           (hasLabel && (txt.includes('загрузить') || txt.includes('load')));
+                });
+
+                if (!loadMoreBtn) break;
+
+                const getCardsCount = () => scope.querySelectorAll('img.inventory-drop-image, img[src*="twitch-quests-assets/REWARD"], img[alt*="Drop"], img[alt*="drop"]').length;
+                const prevCount = getCardsCount();
+
+                const labelEl = loadMoreBtn.querySelector('[data-a-target="tw-core-button-label-text"]') || loadMoreBtn;
+                try {
+                    loadMoreBtn.click();
+                    if (labelEl !== loadMoreBtn) labelEl.click();
+                    labelEl.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+                    loadMoreBtn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+                } catch(e) {
+                    break;
+                }
+
+                let loadedNew = false;
+                for (let w = 0; w < 15; w++) {
+                    await new Promise(r => setTimeout(r, 200));
+                    if (getCardsCount() > prevCount) {
+                        loadedNew = true;
+                        break;
+                    }
+                }
+                if (!loadedNew) break;
+            }
         } catch(e) {}
 
         const drops = [];
@@ -1873,9 +1936,18 @@ function findMatchingDropGroup(invDrop, config, knownGeneralDropNames = new Set(
         return null;
     }
 
-    // 2. Пропуск старых кампаний (прошедших месяцев или лет назад)
-    if (invDropObj.timeAgo && (invDropObj.timeAgo.includes('месяц') || invDropObj.timeAgo.includes('month') || invDropObj.timeAgo.includes('год') || invDropObj.timeAgo.includes('year'))) {
-        return null;
+    // 2. Пропуск старых кампаний: если дроп прошлых месяцев/лет, проверяем, нет ли совпадения со стримером из конфига
+    const isOld = invDropObj.timeAgo && (invDropObj.timeAgo.includes('месяц') || invDropObj.timeAgo.includes('month') || invDropObj.timeAgo.includes('год') || invDropObj.timeAgo.includes('year'));
+    if (isOld) {
+        const normInv = (invName || '').toLowerCase().replace(/[^a-z0-9а-яё]/gi, '');
+        const hasStreamerMatch = (config.channels || []).some(ch => {
+            const user = (ch.url || '').split('/').filter(Boolean).pop().toLowerCase().replace(/[^a-z0-9а-яё]/gi, '');
+            const sNames = (ch.streamerNames || []).map(s => (s || '').toLowerCase().replace(/[^a-z0-9а-яё]/gi, '')).concat(user ? [user] : []);
+            return sNames.some(s => s && s.length > 2 && normInv.includes(s));
+        });
+        if (!hasStreamerMatch) {
+            return null;
+        }
     }
 
     const norm = (s) => (s || '').toLowerCase().replace(/[^a-z0-9а-яё]/gi, '');
@@ -1995,6 +2067,7 @@ function findMatchingDropGroup(invDrop, config, knownGeneralDropNames = new Set(
 
 let lastInventoryApplyTime = 0;
 let lastInventoryPayloadHash = '';
+let lastInventorySyncResult = { completedCount: 0, syncedCount: 0, untouchedCount: 0, totalScraped: 0 };
 let activeStreamProgressTracker = { url: null, dropId: null, lastPercentage: null, stuckSince: 0 };
 
 function applyInventoryData(platform, scrapedDrops, callback) {
@@ -2008,7 +2081,15 @@ function applyInventoryData(platform, scrapedDrops, callback) {
     const payloadHash = platform + ':' + scrapedDrops.map(d => `${d.name}:${d.percentage}:${d.isClaimed}`).join('|');
     const now = Date.now();
     if (now - lastInventoryApplyTime < 4000 && lastInventoryPayloadHash === payloadHash) {
-        callback && callback({ ok: true, synced: true, skippedDuplicate: true });
+        callback && callback({
+            ok: true,
+            synced: true,
+            skippedDuplicate: true,
+            completedCount: lastInventorySyncResult.completedCount,
+            syncedCount: lastInventorySyncResult.syncedCount,
+            untouchedCount: lastInventorySyncResult.untouchedCount,
+            totalScraped: lastInventorySyncResult.totalScraped || scrapedDrops.length
+        });
         return;
     }
     lastInventoryApplyTime = now;
@@ -2156,11 +2237,13 @@ function applyInventoryData(platform, scrapedDrops, callback) {
                 syncConfigState(config);
             }
             totalWatched = watched;
+            lastInventorySyncResult = { completedCount, syncedCount, untouchedCount, totalScraped: scrapedDrops.length };
             chrome.storage.local.set({ userConfig: config, totalWatched: watched }, () => {
                 handleUserConfigChanged(config);
                 callback && callback({ ok: true, completedCount, syncedCount, untouchedCount, totalScraped: scrapedDrops.length });
             });
         } else {
+            lastInventorySyncResult = { completedCount, syncedCount, untouchedCount, totalScraped: scrapedDrops.length };
             callback && callback({ ok: true, completedCount, syncedCount, untouchedCount, totalScraped: scrapedDrops.length });
         }
     });

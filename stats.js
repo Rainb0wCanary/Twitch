@@ -1374,7 +1374,11 @@ document.addEventListener("DOMContentLoaded", () => {
                 syncInventoryBtn.disabled = false;
                 syncInventoryBtn.textContent = '🔄 Сверить инвентарь';
                 if (resp && resp.ok) {
-                    showAlert(`✅ Сверка завершена!\nВсего в инвентаре: ${resp.totalScraped}\nВыполнено на 100%: ${resp.completedCount}\nСинхронизировано по времени: ${resp.syncedCount}\nНе начато (0%): ${resp.untouchedCount || 0}`);
+                    const total = resp.totalScraped !== undefined ? resp.totalScraped : 0;
+                    const completed = resp.completedCount !== undefined ? resp.completedCount : 0;
+                    const synced = resp.syncedCount !== undefined ? resp.syncedCount : 0;
+                    const untouched = resp.untouchedCount !== undefined ? resp.untouchedCount : 0;
+                    showAlert(`✅ Сверка завершена!\nВсего в инвентаре: ${total}\nВыполнено на 100%: ${completed}\nСинхронизировано по времени: ${synced}\nНе начато (0%): ${untouched}`);
                     renderCardsView();
                 } else {
                     showAlert(`⚠️ Не удалось сверить с инвентарём: ${(resp && resp.error) || (resp && resp.reason) || 'убедитесь, что вы авторизованы на Twitch/Kick'}`);
