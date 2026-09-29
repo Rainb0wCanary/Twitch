@@ -87,7 +87,7 @@ function isStreamerOnline() {
         }
 
         // КРИТИЧНО: если видим видеоплеер БЕЗ источника и нет явного 'В ЭФИРЕ' — считаем ОФФЛАЙН
-        // КРИТИЧНО: если видим видеоплеер БЕЗ источника и нет явного 'В ЭФИРЕ' — считаем ОФФЛАЙН
+
         // (Twitch добавляет пустой <video> на офлайн-страницы, чтобы зарезервировать место)
         if (videoElement && !videoElement.currentSrc && !videoElement.src) {
             return false; // Пустой видеоплеер = оффлайн
@@ -644,44 +644,6 @@ try {
     console.error("Ошибка при регистрации onMessage в content.js:", err);
 }
 
-// Автоматический сбор диагностического лога при загрузке страницы
-function collectAndSendDiagnostic() {
-    try {
-        const host = (location && location.hostname) ? location.hostname.toLowerCase() : '';
-        if (!host.includes('twitch.tv') && !host.includes('kick.com')) return;
-        const bodyText = (document.body && document.body.innerText) ? document.body.innerText : '';
-        const streamerOnline = (typeof isStreamerOnline === 'function') ? isStreamerOnline() : null;
-        const hasVideo = !!document.querySelector('video');
-        const liveBadge = Array.from(document.querySelectorAll('span,div,b,strong')).some(el => {
-            try {
-                const t = (el.textContent || '').trim().toLowerCase();
-                return t === 'live' || t.indexOf('live') !== -1 || t.indexOf('в эфире') !== -1 || t.indexOf('не в сети') !== -1;
-            } catch (e) { return false; }
-        });
-        const gameLinkEl = document.querySelector('a[data-a-target="stream-game-link"]') || document.querySelector('a[href*="/directory/"]') || document.querySelector('a');
-        const gameHref = gameLinkEl ? (gameLinkEl.href || null) : null;
-
-        const report = {
-            pageUrl: location.href,
-            pageHost: location.host,
-            timestamp: Date.now(),
-            streamerOnline: streamerOnline,
-            hasVideo: hasVideo,
-            liveBadge: !!liveBadge,
-            gameHref: gameHref,
-            bodySnippet: bodyText ? bodyText.slice(0, 800) : ''
-        };
-
-        try {
-            chrome.runtime.sendMessage({ action: 'diagnosticReport', report });
-        } catch (e) {
-            // fallback для окружений, где sendMessage недоступен
-            console.log('Diagnostic report prepared', report);
-        }
-    } catch (e) {
-        console.error('Ошибка при сборе диагностики:', e);
-    }
-}
 
 function autoSendInventory() {
     if (location.href.includes('/drops/inventory')) {
@@ -697,17 +659,12 @@ function autoSendInventory() {
 // отправляем при load и через небольшой таймаут (DOM динамический)
 try {
     window.addEventListener('load', () => {
-        collectAndSendDiagnostic();
         autoSendInventory();
-        setTimeout(() => { collectAndSendDiagnostic(); autoSendInventory(); }, 2000);
-        setTimeout(() => { collectAndSendDiagnostic(); autoSendInventory(); }, 5000);
+        setTimeout(autoSendInventory, 2500);
     });
-    // также отправим сразу, если скрипт подключился после загрузки
     if (document.readyState === 'complete' || document.readyState === 'interactive') {
-        setTimeout(() => { collectAndSendDiagnostic(); autoSendInventory(); }, 300);
+        setTimeout(autoSendInventory, 500);
     }
-} catch (e) {
-    console.error('Не удалось зарегистрировать отправку диагностики:', e);
-}
+} catch (e) {}
 
 

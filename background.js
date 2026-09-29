@@ -476,11 +476,9 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
         try {
             if (changeInfo.url) {
                 currentStreamInfo = { url: changeInfo.url, secondsLeft: currentStreamInfo.secondsLeft || 0 };
-                log(`DEBUG: обновлён URL вкладки со стримом -> ${changeInfo.url}`);
             }
             if (changeInfo.status === 'complete') {
                 currentStreamInfo = { url: tab.url || currentStreamInfo.url, secondsLeft: currentStreamInfo.secondsLeft || 0 };
-                log(`DEBUG: загрузка вкладки со стримом завершена -> ${currentStreamInfo.url}`);
             }
         } catch (e) {}
     }
@@ -827,7 +825,6 @@ function startWatchTimer(tabId, url, initialWatchTime) {
 
         let secondsLeft = Math.max(0, liveWatchTime - alreadyWatched);
         currentStreamInfo = { url, secondsLeft };
-        log(`DEBUG: startWatchTimer for ${url}${dropId ? ` (group: ${dropId})` : ''}, watchTime=${liveWatchTime}, alreadyWatched=${alreadyWatched}, runId=${myRunId}`);
         
         let timerStopped = false;
         let verifyingTwitchCompletion = false;
