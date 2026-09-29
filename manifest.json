@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Drops — Auto Collector",
-  "version": "1.4.0",
-  "description": "Автоматический сбор Drops с Twitch и Kick. Умная приоритизация, синхронизация с инвентарём, видео-превью наград.",
+  "version": "1.5.1",
+  "description": "Автоматический сбор Drops с Twitch и Kick для любых игр и категорий. Умные кампании, авто-конфиг, приоритеты и таймеры.",
   "permissions": ["scripting", "storage", "activeTab", "tabs", "alarms"],
   "host_permissions": ["<all_urls>"],
   "background": {

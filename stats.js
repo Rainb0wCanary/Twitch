@@ -148,6 +148,108 @@ function sortGroupIdsByProgress(groupIds, config, totalWatched) {
 }
 
 // =========================================================
+// Активная кампания Twitch Drops (баннер и оставшееся время)
+// =========================================================
+
+function renderActiveCampaignBanner(campaign) {
+    const coverImg = document.getElementById('campaignCoverImg');
+    const coverPlaceholder = document.getElementById('campaignCoverPlaceholder');
+    const gameNameEl = document.getElementById('campaignGameName');
+    const badgeEl = document.getElementById('campaignBadgeTime');
+    const titleSubEl = document.getElementById('campaignTitleSub');
+    const dot1 = document.getElementById('campaignMetaDot1');
+    const dateRangeEl = document.getElementById('campaignDateRange');
+    const dot2 = document.getElementById('campaignMetaDot2');
+    const catLink = document.getElementById('campaignCategoryLink');
+
+    if (!gameNameEl || !badgeEl) return;
+
+    if (campaign && (campaign.gameName || campaign.title)) {
+        gameNameEl.textContent = campaign.gameName || campaign.title;
+
+        // Обложка игры
+        if (campaign.coverImg && coverImg) {
+            coverImg.src = campaign.coverImg;
+            coverImg.style.display = 'block';
+            if (coverPlaceholder) coverPlaceholder.style.display = 'none';
+            coverImg.onerror = () => {
+                coverImg.style.display = 'none';
+                if (coverPlaceholder) coverPlaceholder.style.display = 'block';
+            };
+        } else {
+            if (coverImg) coverImg.style.display = 'none';
+            if (coverPlaceholder) coverPlaceholder.style.display = 'block';
+        }
+
+        // Подзаголовок / название кампании
+        if (titleSubEl) {
+            if (campaign.title && campaign.title !== campaign.gameName) {
+                titleSubEl.textContent = campaign.title;
+                titleSubEl.style.display = 'inline';
+            } else {
+                titleSubEl.textContent = 'Активная кампания Drops';
+                titleSubEl.style.display = 'inline';
+            }
+        }
+
+        // Сроки кампании
+        if (dateRangeEl) {
+            if (campaign.dateStr) {
+                dateRangeEl.textContent = `📅 ${campaign.dateStr}`;
+                dateRangeEl.style.display = 'inline';
+                if (dot1) dot1.style.display = 'inline';
+            } else {
+                dateRangeEl.style.display = 'none';
+                if (dot1) dot1.style.display = 'none';
+            }
+        }
+
+        // Ссылка на категорию Twitch
+        if (catLink) {
+            if (campaign.categoryUrl) {
+                catLink.href = campaign.categoryUrl;
+                catLink.style.display = 'inline-flex';
+                if (dot2) dot2.style.display = 'inline';
+            } else {
+                catLink.style.display = 'none';
+                if (dot2) dot2.style.display = 'none';
+            }
+        }
+
+        // Бейдж оставшегося времени кампании
+        badgeEl.className = 'badge-time-left';
+        const timeLeft = campaign.timeLeftStr || '';
+        const isEnded = campaign.isEnded || timeLeft.includes('Завершен') || timeLeft.includes('Истекло');
+
+        if (isEnded) {
+            badgeEl.classList.add('badge-ended');
+            badgeEl.textContent = '⌛ Завершена';
+        } else if (timeLeft) {
+            if (timeLeft.includes('мин') && !timeLeft.includes('д') && !timeLeft.includes('ч')) {
+                badgeEl.classList.add('badge-urgent');
+            }
+            badgeEl.textContent = `⏳ ${timeLeft}`;
+        } else {
+            badgeEl.classList.add('badge-neutral');
+            badgeEl.textContent = 'Активна';
+        }
+    } else {
+        // Кампания не выбрана
+        gameNameEl.textContent = 'Кампания не выбрана';
+        if (coverImg) coverImg.style.display = 'none';
+        if (coverPlaceholder) coverPlaceholder.style.display = 'block';
+        if (titleSubEl) titleSubEl.textContent = 'Нажмите «Выбрать кампанию», чтобы загрузить актуальные дропсы';
+        if (dot1) dot1.style.display = 'none';
+        if (dateRangeEl) dateRangeEl.style.display = 'none';
+        if (dot2) dot2.style.display = 'none';
+        if (catLink) catLink.style.display = 'none';
+
+        badgeEl.className = 'badge-time-left badge-neutral';
+        badgeEl.textContent = 'Не выбрана';
+    }
+}
+
+// =========================================================
 // Отрисовка карточного интерфейса
 // =========================================================
 
@@ -167,6 +269,10 @@ function renderCardsView() {
     chrome.storage.local.get(['userConfig', 'totalWatched'], (data) => {
         const config = data.userConfig || { channels: [] };
         const totalWatched = data.totalWatched || {};
+
+        // Обновляем верхний баннер активной кампании
+        renderActiveCampaignBanner(config.campaign);
+
         const blacklist = (typeof config.blacklist === 'object' && !Array.isArray(config.blacklist)) ? config.blacklist : {};
         const channels = Array.isArray(config.channels) ? config.channels : [];
         const groupOrder = Array.isArray(config.groupOrder) ? config.groupOrder : [];
@@ -194,6 +300,19 @@ function renderCardsView() {
                 groups[dropId].channels.push({ url, ch, watchTime });
             } else {
                 ungrouped.push({ url, ch, watchTime });
+            }
+        });
+
+        // Гарантируем наличие всех групп из groupOrder в объекте groups
+        groupOrder.forEach(gId => {
+            if (!groups[gId]) {
+                const media = dropMedia[gId] || {};
+                groups[gId] = {
+                    dropId: gId,
+                    dropName: media.name || gId.replace(/^drop_/, '').replace(/_/g, ' '),
+                    watchTime: config.watchTime || '01:00:00',
+                    channels: []
+                };
             }
         });
 
@@ -499,7 +618,7 @@ function renderCardsView() {
                             <span class="priority-badge set-group-priority" data-dropid="${dropId}" data-priority="${priorityNumber}" title="Нажмите, чтобы изменить приоритет">#${priorityNumber}</span>
                             <button class="priority-btn move-group-down" data-dropid="${dropId}" title="Понизить приоритет" ${index === sortedGroupIds.length - 1 ? 'disabled' : ''}>▼</button>
                         </div>
-                        <h3 class="drop-id">${dropId}</h3>
+                        <h3 class="drop-id" title="${dropId}">${group.dropName && group.dropName !== dropId ? `${group.dropName} <span style="font-size:11px;font-weight:normal;opacity:0.75;">(${dropId})</span>` : dropId}</h3>
                     </div>
                     <div class="group-actions">
                         <button class="btn btn-xs btn-surface edit-group-btn" data-dropid="${dropId}" title="Изменить ID или целевое время">✏️ Изм</button>
@@ -561,6 +680,13 @@ function renderCardsView() {
 
             // Заполняем каналы группы
             const listEl = card.querySelector(`#channel-list-${dropId}`);
+            if (group.channels.length === 0) {
+                const emptyLi = document.createElement('li');
+                emptyLi.className = 'channel-item channel-item-empty';
+                emptyLi.style.cssText = 'padding:14px;color:#94a3b8;font-size:13px;display:flex;justify-content:center;align-items:center;background:rgba(255,255,255,0.02);border-radius:6px;';
+                emptyLi.innerHTML = `<span>Каналы не привязаны. Добавьте URL стрима ниже.</span>`;
+                listEl.appendChild(emptyLi);
+            }
             group.channels.forEach(item => {
                 const url = item.url;
                 const watched = totalWatched[url] || 0;
@@ -1134,6 +1260,329 @@ function pollLog() {
     });
 }
 
+// =========================================================
+// Управление кампаниями Twitch Drops (Universal Campaigns)
+// =========================================================
+
+let allCampaignsList = [];
+let isFetchingCampaigns = false;
+
+function initCampaignExplorer() {
+    const modal = document.getElementById('campaignModal');
+    const openBtn = document.getElementById('openCampaignsBtn');
+    const bannerPickBtn = document.getElementById('bannerPickCampaignBtn');
+    const settingsPickBtn = document.getElementById('openCampaignsFromSettingsBtn');
+    const closeBtn = document.getElementById('closeCampaignModalBtn');
+    const closeBottomBtn = document.getElementById('closeCampaignModalBottomBtn');
+    const searchInput = document.getElementById('campaignSearchInput');
+    const clearSearchBtn = document.getElementById('clearCampaignSearchBtn');
+    const fetchTwitchBtn = document.getElementById('fetchTwitchCampaignsBtn');
+    const manualCategoryBtn = document.getElementById('manualCategoryModalBtn');
+    const statusBanner = document.getElementById('campaignStatusBanner');
+    const statusMsg = document.getElementById('campaignStatusMsg');
+    const grid = document.getElementById('campaignsGrid');
+    const emptyState = document.getElementById('campaignsEmptyState');
+
+    if (!modal) return;
+
+    function showStatus(text) {
+        if (statusMsg) statusMsg.textContent = text;
+        if (statusBanner) statusBanner.style.display = 'flex';
+    }
+
+    function hideStatus() {
+        if (statusBanner) statusBanner.style.display = 'none';
+    }
+
+    function openModal() {
+        modal.style.display = 'flex';
+        document.body.style.overflow = 'hidden';
+        if (searchInput) {
+            searchInput.focus();
+        }
+        if (allCampaignsList.length === 0) {
+            autoLoadCampaigns();
+        }
+    }
+
+    function closeModal() {
+        modal.style.display = 'none';
+        document.body.style.overflow = '';
+    }
+
+    if (openBtn) openBtn.addEventListener('click', openModal);
+    if (bannerPickBtn) bannerPickBtn.addEventListener('click', openModal);
+    if (settingsPickBtn) settingsPickBtn.addEventListener('click', openModal);
+    if (closeBtn) closeBtn.addEventListener('click', closeModal);
+    if (closeBottomBtn) closeBottomBtn.addEventListener('click', closeModal);
+
+    modal.addEventListener('click', (e) => {
+        if (e.target === modal) closeModal();
+    });
+
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape' && modal.style.display === 'flex') {
+            closeModal();
+        }
+    });
+
+    try {
+        const urlParams = new URLSearchParams(window.location.search);
+        if (urlParams.get('openCampaigns') === '1') {
+            openModal();
+        }
+    } catch(e) {}
+
+    function autoLoadCampaigns() {
+        loadFromTwitch();
+    }
+
+    function loadFromTwitch() {
+        if (isFetchingCampaigns) return;
+        isFetchingCampaigns = true;
+        showStatus('Считывание активных кампаний со страницы Twitch...');
+        if (fetchTwitchBtn) {
+            fetchTwitchBtn.disabled = true;
+            fetchTwitchBtn.textContent = '⏳ Считывание...';
+        }
+
+        chrome.runtime.sendMessage({ action: "getTwitchCampaigns", forceRefresh: true }, (resp) => {
+            isFetchingCampaigns = false;
+            hideStatus();
+            if (fetchTwitchBtn) {
+                fetchTwitchBtn.disabled = false;
+                fetchTwitchBtn.innerHTML = '<span>🌐</span> Считать с Twitch';
+            }
+
+            if (resp && resp.ok && Array.isArray(resp.campaigns) && resp.campaigns.length > 0) {
+                allCampaignsList = resp.campaigns;
+                renderCampaignsGrid(allCampaignsList);
+            } else {
+                showAlert('⚠️ Не удалось считать список кампаний с Twitch.\nПожалуйста, убедитесь, что страница twitch.tv/drops/campaigns доступна в браузере.');
+            }
+        });
+    }
+
+    if (fetchTwitchBtn) {
+        fetchTwitchBtn.addEventListener('click', () => loadFromTwitch());
+    }
+
+    if (manualCategoryBtn) {
+        manualCategoryBtn.addEventListener('click', () => {
+            const catUrl = showPrompt('Введите URL категории на Twitch (например, https://www.twitch.tv/directory/category/rust):');
+            if (!catUrl) return;
+            const normUrl = normalizeChannelUrl(catUrl);
+            chrome.storage.local.get('userConfig', (data) => {
+                const cfg = data.userConfig || {};
+                cfg.searchUrlPart = normUrl;
+                chrome.storage.local.set({ userConfig: cfg }, () => {
+                    showAlert(`Категория поиска обновлена на: ${normUrl}`);
+                    renderCardsView();
+                    closeModal();
+                });
+            });
+        });
+    }
+
+    if (searchInput) {
+        searchInput.addEventListener('input', () => {
+            const q = searchInput.value.trim().toLowerCase();
+            if (clearSearchBtn) {
+                clearSearchBtn.style.display = q ? 'block' : 'none';
+            }
+            if (!q) {
+                renderCampaignsGrid(allCampaignsList);
+                return;
+            }
+            const filtered = allCampaignsList.filter(c => {
+                const gn = (c.gameName || '').toLowerCase();
+                const ct = (c.campaignTitle || '').toLowerCase();
+                return gn.includes(q) || ct.includes(q);
+            });
+            renderCampaignsGrid(filtered);
+        });
+    }
+
+    if (clearSearchBtn && searchInput) {
+        clearSearchBtn.addEventListener('click', () => {
+            searchInput.value = '';
+            clearSearchBtn.style.display = 'none';
+            renderCampaignsGrid(allCampaignsList);
+            searchInput.focus();
+        });
+    }
+
+    function renderCampaignsGrid(list) {
+        if (!grid) return;
+        grid.innerHTML = '';
+
+        if (!list || list.length === 0) {
+            if (emptyState) emptyState.style.display = 'flex';
+            return;
+        }
+        if (emptyState) emptyState.style.display = 'none';
+
+        list.forEach((c, idx) => {
+            const card = document.createElement('div');
+            card.className = 'campaign-card';
+
+            const thumb = document.createElement('div');
+            thumb.className = 'campaign-card-thumb';
+            if (c.coverImg) {
+                const img = document.createElement('img');
+                img.src = c.coverImg;
+                img.alt = c.gameName || 'Cover';
+                img.onerror = () => { thumb.innerHTML = '🎮'; };
+                thumb.appendChild(img);
+            } else {
+                thumb.innerHTML = '🎮';
+            }
+            card.appendChild(thumb);
+
+            const content = document.createElement('div');
+            content.className = 'campaign-card-content';
+
+            const headerRow = document.createElement('div');
+            headerRow.className = 'campaign-card-header';
+
+            const title = document.createElement('h3');
+            title.className = 'campaign-card-title';
+            title.textContent = c.gameName || 'Без названия';
+            title.title = c.gameName || '';
+            headerRow.appendChild(title);
+
+            const badge = document.createElement('span');
+            badge.className = 'badge-time-left';
+            const timeLeft = c.timeLeftStr || '';
+            const isEnded = c.isEnded || timeLeft.includes('Завершен') || timeLeft.includes('Истекло');
+            if (isEnded) {
+                badge.classList.add('badge-ended');
+                badge.textContent = '⌛ Завершена';
+            } else if (timeLeft) {
+                if (timeLeft.includes('мин') && !timeLeft.includes('д') && !timeLeft.includes('ч')) {
+                    badge.classList.add('badge-urgent');
+                }
+                badge.textContent = `⏳ ${timeLeft}`;
+            } else {
+                badge.classList.add('badge-neutral');
+                badge.textContent = 'Активна';
+            }
+            headerRow.appendChild(badge);
+            content.appendChild(headerRow);
+
+            if (c.campaignTitle && c.campaignTitle !== c.gameName) {
+                const sub = document.createElement('div');
+                sub.className = 'campaign-card-sub';
+                sub.textContent = c.campaignTitle;
+                sub.title = c.campaignTitle;
+                content.appendChild(sub);
+            }
+
+            const dates = document.createElement('div');
+            dates.className = 'campaign-card-dates';
+            dates.textContent = c.dateStr ? `📅 ${c.dateStr}` : '📅 Сроки не указаны';
+            content.appendChild(dates);
+
+            card.appendChild(content);
+
+            const actionArea = document.createElement('div');
+            actionArea.className = 'campaign-card-action';
+
+            const selectBtn = document.createElement('button');
+            selectBtn.className = 'btn btn-primary btn-sm';
+            selectBtn.textContent = '📥 Выбрать';
+            selectBtn.title = `Настроить бота под "${c.gameName}"`;
+
+            selectBtn.addEventListener('click', () => {
+                selectCampaign(c, idx, selectBtn);
+            });
+
+            actionArea.appendChild(selectBtn);
+            card.appendChild(actionArea);
+
+            grid.appendChild(card);
+        });
+    }
+
+    function selectCampaign(c, index, btnEl) {
+        if (!c) return;
+        if (btnEl) {
+            btnEl.disabled = true;
+            btnEl.textContent = '⏳ Импорт...';
+        }
+        showStatus(`Импорт кампании "${c.gameName}"...`);
+
+        const rawIdx = (c.rawIndex !== undefined) ? c.rawIndex : ((c.index !== undefined) ? c.index : index);
+
+        chrome.runtime.sendMessage({
+            action: "importTwitchCampaign",
+            gameName: c.gameName,
+            index: rawIdx
+        }, (resp) => {
+            hideStatus();
+            if (btnEl) {
+                btnEl.disabled = false;
+                btnEl.textContent = '📥 Выбрать';
+            }
+
+            if (resp && resp.ok) {
+                const channelsCount = resp.channelsCount || 0;
+                const groupsCount = resp.groupsCount || 0;
+                const campaignObj = resp.campaign || c;
+
+                renderActiveCampaignBanner(campaignObj);
+                renderCardsView();
+                loadConfigForm();
+                closeModal();
+
+                if (channelsCount === 0) {
+                    const wantLive = showConfirm(`✅ Кампания "${c.gameName}" выбрана!\nНаград: ${groupsCount}.\n\nВ этой кампании нет закреплённых стримеров (только общие дропы категории).\n\nНайти сейчас каналы, которые в прямом эфире с Drops в этой категории?`);
+                    if (wantLive) {
+                        fetchAndAddLiveCategoryStreamers((campaignObj && campaignObj.categoryUrl) || resp.categoryUrl, c.gameName);
+                    }
+                } else {
+                    showAlert(`✅ Кампания "${c.gameName}" успешно выбрана!\nГрупп наград: ${groupsCount}, каналов: ${channelsCount}\nСрок: ${campaignObj.timeLeftStr || 'активна'}`);
+                }
+            } else {
+                showAlert(`❌ Ошибка импорта кампании: ${(resp && resp.error) || 'неизвестная ошибка'}`);
+            }
+        });
+    }
+
+    function fetchAndAddLiveCategoryStreamers(categoryUrl, gameName) {
+        showStatus(`Поиск активных стримеров в категории "${gameName}"...`);
+        chrome.runtime.sendMessage({ action: "fetchCategoryLiveChannels", categoryUrl, gameName }, (resp) => {
+            hideStatus();
+            if (resp && resp.ok && Array.isArray(resp.channels) && resp.channels.length > 0) {
+                chrome.storage.local.get("userConfig", (data) => {
+                    const cfg = data.userConfig || {};
+                    if (!Array.isArray(cfg.channels)) cfg.channels = [];
+                    const defaultDropId = (cfg.groupOrder && cfg.groupOrder[0]) || 'drop_general';
+                    let added = 0;
+                    resp.channels.forEach(url => {
+                        const norm = normalizeChannelUrl(url);
+                        if (!cfg.channels.some(ch => (typeof ch === 'string' ? ch : ch.url) === norm)) {
+                            cfg.channels.push({
+                                url: norm,
+                                watchTime: cfg.watchTime || '01:00:00',
+                                dropId: defaultDropId,
+                                dropName: gameName || 'Общий дроп'
+                            });
+                            added++;
+                        }
+                    });
+                    chrome.storage.local.set({ userConfig: cfg }, () => {
+                        showAlert(`✅ Успешно добавлено ${added} активных стримеров в категорию "${gameName}"!`);
+                        renderCardsView();
+                    });
+                });
+            } else {
+                showAlert(`⚠️ Не удалось автоматически найти активных стримеров: ${(resp && resp.error) || 'стримы офлайн'}.\nВы можете вручную добавить нужный канал через "+ Новая группа" или форму настроек.`);
+            }
+        });
+    }
+}
+
 document.addEventListener("DOMContentLoaded", () => {
     // Первоначальный рендер карточек
     renderCardsView();
@@ -1429,4 +1878,17 @@ document.addEventListener("DOMContentLoaded", () => {
             logsSection.classList.toggle('collapsed');
         });
     }
+
+    // Инициализация модального каталога кампаний Twitch Drops
+    initCampaignExplorer();
+
+    // Первоначальный запрос времени кампании и периодический опрос (раз в 30 сек)
+    chrome.runtime.sendMessage({ action: "getCampaignTimeLeft" }, (resp) => {
+        if (resp && resp.ok && resp.campaign) renderActiveCampaignBanner(resp.campaign);
+    });
+    setInterval(() => {
+        chrome.runtime.sendMessage({ action: "getCampaignTimeLeft" }, (resp) => {
+            if (resp && resp.ok && resp.campaign) renderActiveCampaignBanner(resp.campaign);
+        });
+    }, 30000);
 });

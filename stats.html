@@ -24,6 +24,9 @@
             </div>
 
             <div class="header-actions">
+                <button id="openCampaignsBtn" class="btn btn-primary" title="Открыть менеджер кампаний Twitch Drops">
+                    <span class="btn-icon">🎯</span> Кампании Drops
+                </button>
                 <button id="syncInventoryBtn" class="btn btn-success" title="Сверить прогресс с инвентарём Twitch / Kick">
                     <span class="btn-icon">🔄</span> Инвентарь
                 </button>
@@ -35,6 +38,36 @@
                 </button>
             </div>
         </header>
+
+        <!-- Карточка активной кампании и таймер окончания -->
+        <section class="campaign-banner-section">
+            <div id="activeCampaignBanner" class="active-campaign-banner">
+                <div class="campaign-banner-left">
+                    <div class="campaign-cover-wrapper">
+                        <img id="campaignCoverImg" class="campaign-cover-img" src="" alt="" style="display:none;">
+                        <span id="campaignCoverPlaceholder" class="campaign-cover-placeholder">🎮</span>
+                    </div>
+                    <div class="campaign-info">
+                        <div class="campaign-title-row">
+                            <span id="campaignGameName" class="campaign-game-name">Кампания не выбрана</span>
+                            <span id="campaignBadgeTime" class="badge-time-left badge-neutral">Не выбрана</span>
+                        </div>
+                        <div class="campaign-meta-row">
+                            <span id="campaignTitleSub" class="campaign-subtitle">Нажмите «Выбрать кампанию», чтобы загрузить актуальные дропсы</span>
+                            <span id="campaignMetaDot1" class="campaign-dot" style="display:none;">•</span>
+                            <span id="campaignDateRange" class="campaign-dates" style="display:none;"></span>
+                            <span id="campaignMetaDot2" class="campaign-dot" style="display:none;">•</span>
+                            <a id="campaignCategoryLink" href="#" target="_blank" class="campaign-cat-link" style="display:none;">Категория на Twitch ↗</a>
+                        </div>
+                    </div>
+                </div>
+                <div class="campaign-banner-actions">
+                    <button id="bannerPickCampaignBtn" class="btn btn-primary" title="Выбрать игру или актуальную кампанию">
+                        <span>🎯</span> Выбрать кампанию
+                    </button>
+                </div>
+            </div>
+        </section>
 
         <!-- Сводная панель статистики -->
         <section class="stats-overview">
@@ -81,7 +114,13 @@
                 <!-- Быстрые действия: импорт кампаний и создание групп -->
                 <div class="config-actions-bar">
                     <div class="config-actions-group">
-                        <span class="config-bar-label">Кампании Facepunch:</span>
+                        <span class="config-bar-label">Кампании Twitch Drops:</span>
+                        <button id="openCampaignsFromSettingsBtn" class="btn btn-primary btn-sm" title="Открыть каталог актуальных кампаний со страницы Twitch">
+                            <span class="btn-icon">🎯</span> Выбрать кампанию
+                        </button>
+                    </div>
+                    <div class="config-actions-group">
+                        <span class="config-bar-label">Facepunch (Rust):</span>
                         <div class="segmented-control">
                             <button id="importTwitchFacepunchBtn" class="btn btn-segmented" title="Импорт кампании с twitch.facepunch.com">
                                 <span>📥 Twitch</span>
@@ -91,7 +130,7 @@
                             </button>
                         </div>
                     </div>
-                    <button id="createNewGroup" class="btn btn-primary btn-sm" title="Создать новую группу дропа вручную">
+                    <button id="createNewGroup" class="btn btn-surface btn-sm" title="Создать новую группу дропа вручную">
                         <span class="btn-icon">+</span> Новая группа
                     </button>
                 </div>
@@ -158,6 +197,59 @@
             </div>
             <div id="log" class="card log-card"></div>
         </footer>
+
+        <!-- Модальное окно выбора и поиска кампаний Twitch Drops -->
+        <div id="campaignModal" class="modal-backdrop" style="display:none;">
+            <div class="modal-dialog modal-lg">
+                <div class="modal-header">
+                    <div class="modal-title-group">
+                        <div class="modal-icon">🎯</div>
+                        <div>
+                            <h2 class="modal-title">Кампании Twitch Drops</h2>
+                            <p class="modal-subtitle">Выберите активную кампанию игры для автоматической настройки дропсов, стримеров и таймеров</p>
+                        </div>
+                    </div>
+                    <button id="closeCampaignModalBtn" class="btn-close" title="Закрыть">✕</button>
+                </div>
+
+                <div class="modal-toolbar">
+                    <div class="search-input-wrapper">
+                        <span class="search-icon">🔍</span>
+                        <input id="campaignSearchInput" type="text" class="search-input" placeholder="Поиск по названию игры (например, Rust, GTA, CONTROL, Apex, CS)...">
+                        <button id="clearCampaignSearchBtn" class="search-clear-btn" style="display:none;" title="Очистить поиск">✕</button>
+                    </div>
+                    <div class="modal-toolbar-actions">
+                        <button id="fetchTwitchCampaignsBtn" class="btn btn-primary btn-sm" title="Считать список активных кампаний со страницы twitch.tv/drops/campaigns">
+                            <span>🌐</span> Считать с Twitch
+                        </button>
+                    </div>
+                </div>
+
+                <div id="campaignStatusBanner" class="campaign-status-banner" style="display:none;">
+                    <span class="status-spinner"></span>
+                    <span id="campaignStatusMsg">Загрузка кампаний с Twitch...</span>
+                </div>
+
+                <div class="modal-body campaign-list-scroll">
+                    <div id="campaignsGrid" class="campaigns-grid">
+                        <!-- Карточки кампаний будут динамически рендериться здесь -->
+                    </div>
+                    <div id="campaignsEmptyState" class="campaigns-empty" style="display:none;">
+                        <span class="empty-icon">🔍</span>
+                        <p class="empty-text">Ничего не найдено по вашему запросу</p>
+                    </div>
+                </div>
+
+                <div class="modal-footer">
+                    <div class="modal-footer-left">
+                        <button id="manualCategoryModalBtn" class="btn btn-surface btn-xs" title="Указать URL категории Twitch вручную">
+                            ✏️ Ввести URL категории вручную
+                        </button>
+                    </div>
+                    <button id="closeCampaignModalBottomBtn" class="btn btn-surface btn-sm">Закрыть</button>
+                </div>
+            </div>
+        </div>
     </div>
 
     <script src="stats.js"></script>

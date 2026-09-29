@@ -289,78 +289,150 @@ async function scrapeDropsInventory() {
             return { ok: false, error: 'Вкладка не относится к Twitch или Kick: ' + location.href };
         }
 
+        // 0. Ожидание начальной отрисовки DOM инвентаря (до 9 секунд)
+        if (isTwitch) {
+            for (let wait = 0; wait < 30; wait++) {
+                const hasHeadings = Array.from(document.querySelectorAll('h1, h2, h3, h4, h5, h6, div, p, span'))
+                    .some(el => {
+                        const t = (el.textContent || '').trim().toLowerCase();
+                        return t === 'получено' || t === 'claimed' || t === 'полученные награды' || t === 'claimed drops' || t.includes('текущие');
+                    });
+                const hasCards = document.querySelectorAll('img[src*="jtvnw.net"], img[src*="twitch-quests-assets"], img[alt*="Drop" i], img.inventory-drop-image, [role="progressbar"]').length > 0;
+                const isLoggedOut = !!document.querySelector('button[data-a-target="login-button"]');
+                if ((hasHeadings && hasCards) || isLoggedOut || (hasCards && wait > 6)) {
+                    break;
+                }
+                await new Promise(r => setTimeout(r, 300));
+            }
+        }
+
         // 1. Раскрытие свернутых секций
         try {
             document.querySelectorAll('button[aria-expanded="false"]').forEach(btn => {
                 const txt = (btn.textContent || '').toLowerCase();
-                if (txt.includes('drop') || txt.includes('дроп') || txt.includes('rust') || txt.includes('campaign') || txt.includes('кампани')) {
-                    btn.click();
+                if (txt.includes('drop') || txt.includes('дроп') || txt.includes('rust') || txt.includes('campaign') || txt.includes('кампани') || txt.includes('описание')) {
+                    try { btn.click(); } catch(e) {}
                 }
             });
         } catch(e) {}
 
-        // 1.1. Раскрытие скрытых полученных наград в секции "Получено" / "Claimed"
-        try {
-            for (let iter = 0; iter < 6; iter++) {
-                // Ищем заголовок секции "Получено" / "Claimed"
-                const headings = Array.from(document.querySelectorAll('h1, h2, h3, h4, h5, h6, div, p, span'));
-                const claimedHeading = headings.find(el => {
-                    const t = (el.textContent || '').trim().toLowerCase();
-                    return t === 'получено' || t === 'claimed' || t === 'полученные награды' || t === 'claimed drops';
-                });
+        // 1.1. Раскрытие ВСЕХ порций наград в секции "Получено" / "Claimed" (включая вторую, третью двадцатки и т.д.)
+        if (isTwitch) {
+            try {
+                const countClaimedCards = () => {
+                    const main = document.querySelector('main, [role="main"]') || document.body;
+                    const dateEls = Array.from(main.querySelectorAll('p, span, div, h4, h5, h6')).filter(el => {
+                        if (el.children.length > 2) return false;
+                        const t = (el.textContent || '').trim().toLowerCase();
+                        return t === 'позавчера' || t === 'вчера' || t === 'сегодня' ||
+                               t === 'yesterday' || t === 'today' ||
+                               t.includes('назад') || t.includes('ago') ||
+                               t.includes('получено') || t.includes('claimed');
+                    });
 
-                let claimedSection = claimedHeading ? claimedHeading.parentElement : null;
-                while (claimedSection && claimedSection !== document.body) {
-                    if (claimedSection.querySelector('.tw-tower, [class*="tw-tower"]') || claimedSection.querySelector('img.inventory-drop-image')) {
+                    const cardContainers = new Set();
+                    dateEls.forEach(el => {
+                        let card = el.parentElement;
+                        for (let i = 0; i < 4 && card && card !== main; i++) {
+                            const lines = (card.innerText || '').split('\n').map(s => s.trim()).filter(Boolean);
+                            if (lines.length >= 2 && lines.length <= 8) {
+                                cardContainers.add(card);
+                                break;
+                            }
+                            card = card.parentElement;
+                        }
+                    });
+
+                    return Math.max(cardContainers.size, dateEls.length);
+                };
+
+                const findInventoryLoadMoreButton = () => {
+                    const main = document.querySelector('main, [role="main"]') || document.body;
+                    const allButtons = Array.from(main.querySelectorAll('button, [role="button"]'));
+
+                    return allButtons.find(b => {
+                        // Исключаем левую боковую панель, шапку и навигацию
+                        if (b.closest('nav, aside, [data-a-target="side-nav"], #side-nav, .side-nav, [role="navigation"]')) {
+                            return false;
+                        }
+                        if (b.disabled || b.getAttribute('aria-disabled') === 'true') return false;
+
+                        const txt = (b.textContent || '').replace(/\s+/g, ' ').trim().toLowerCase();
+                        const target = (b.getAttribute('data-a-target') || '').toLowerCase();
+                        const testSel = (b.getAttribute('data-test-selector') || '').toLowerCase();
+
+                        // Исключаем кнопки боковой панели канала ("показать еще", "отслеживаемое")
+                        if (txt.includes('показать') || txt.includes('отслеживаемое') || txt.includes('followed') || txt.includes('канал') || txt.includes('stream')) {
+                            return false;
+                        }
+
+                        // Ищем строго кнопку "Загрузить еще" / "Load more"
+                        return txt === 'загрузить еще' ||
+                               txt === 'загрузить ещё' ||
+                               txt === 'load more' ||
+                               txt.startsWith('загрузить еще') ||
+                               txt.startsWith('загрузить ещё') ||
+                               txt.startsWith('load more') ||
+                               (txt.includes('загрузить') && (txt.includes('еще') || txt.includes('ещё') || txt.includes('наград'))) ||
+                               target.includes('load-more') ||
+                               testSel.includes('load-more');
+                    });
+                };
+
+                for (let iter = 0; iter < 5; iter++) {
+                    window.scrollTo(0, document.body.scrollHeight);
+                    await new Promise(r => setTimeout(r, 400));
+
+                    const loadMoreBtn = findInventoryLoadMoreButton();
+                    if (!loadMoreBtn) break;
+
+                    const prevCount = countClaimedCards();
+
+                    try {
+                        loadMoreBtn.scrollIntoView({ behavior: 'instant', block: 'center' });
+                    } catch(e) {}
+
+                    const _force = loadMoreBtn.offsetHeight;
+                    const labelEl = loadMoreBtn.querySelector('[data-a-target="tw-core-button-label-text"]') || loadMoreBtn.firstElementChild || loadMoreBtn;
+
+                    try {
+                        const opts = { bubbles: true, cancelable: true, view: window, detail: 1, button: 0 };
+                        loadMoreBtn.dispatchEvent(new PointerEvent('pointerdown', opts));
+                        loadMoreBtn.dispatchEvent(new MouseEvent('mousedown', opts));
+                        loadMoreBtn.dispatchEvent(new PointerEvent('pointerup', opts));
+                        loadMoreBtn.dispatchEvent(new MouseEvent('mouseup', opts));
+                        loadMoreBtn.dispatchEvent(new MouseEvent('click', opts));
+                        loadMoreBtn.click();
+                        if (labelEl && labelEl !== loadMoreBtn) {
+                            labelEl.dispatchEvent(new MouseEvent('click', opts));
+                            labelEl.click();
+                        }
+                    } catch(e) {
                         break;
                     }
-                    claimedSection = claimedSection.parentElement;
-                }
 
-                const scope = claimedSection || document;
-                const buttons = Array.from(scope.querySelectorAll('button, [role="button"]'));
-                const loadMoreBtn = buttons.find(b => {
-                    if (!b || b.disabled || b.getAttribute('aria-disabled') === 'true') return false;
-                    const txt = (b.textContent || '').replace(/\s+/g, ' ').trim().toLowerCase();
-                    const target = (b.getAttribute('data-a-target') || '').toLowerCase();
-                    const hasLabel = !!b.querySelector('[data-a-target="tw-core-button-label-text"]');
-
-                    return txt.includes('загрузить еще') ||
-                           txt.includes('загрузить ещё') ||
-                           txt.includes('load more') ||
-                           txt.includes('show more') ||
-                           txt.includes('показать еще') ||
-                           txt.includes('показать ещё') ||
-                           target.includes('load-more') ||
-                           (hasLabel && (txt.includes('загрузить') || txt.includes('load')));
-                });
-
-                if (!loadMoreBtn) break;
-
-                const getCardsCount = () => scope.querySelectorAll('img.inventory-drop-image, img[src*="twitch-quests-assets/REWARD"], img[alt*="Drop"], img[alt*="drop"]').length;
-                const prevCount = getCardsCount();
-
-                const labelEl = loadMoreBtn.querySelector('[data-a-target="tw-core-button-label-text"]') || loadMoreBtn;
-                try {
-                    loadMoreBtn.click();
-                    if (labelEl !== loadMoreBtn) labelEl.click();
-                    labelEl.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
-                    loadMoreBtn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
-                } catch(e) {
-                    break;
-                }
-
-                let loadedNew = false;
-                for (let w = 0; w < 15; w++) {
-                    await new Promise(r => setTimeout(r, 200));
-                    if (getCardsCount() > prevCount) {
-                        loadedNew = true;
-                        break;
+                    // Ожидание подгрузки новых наград через GraphQL (до 7.5 секунд)
+                    let loadedNew = false;
+                    for (let w = 0; w < 25; w++) {
+                        await new Promise(r => setTimeout(r, 300));
+                        const curCount = countClaimedCards();
+                        if (curCount > prevCount) {
+                            loadedNew = true;
+                            window.scrollTo(0, document.body.scrollHeight);
+                            await new Promise(r => setTimeout(r, 400));
+                            break;
+                        }
+                        if (!document.body.contains(loadMoreBtn) || loadMoreBtn.disabled || loadMoreBtn.getAttribute('aria-disabled') === 'true') {
+                            await new Promise(r => setTimeout(r, 800));
+                            if (countClaimedCards() > prevCount) loadedNew = true;
+                            break;
+                        }
                     }
+
+                    if (!loadedNew) break;
                 }
-                if (!loadedNew) break;
-            }
-        } catch(e) {}
+            } catch(e) {}
+        }
 
         const drops = [];
         const processedKeys = new Set();
@@ -576,47 +648,79 @@ async function scrapeDropsInventory() {
             });
 
             // Парсинг уже полученных наград (секция "Получено" / "Claimed")
-            const claimedImgs = document.querySelectorAll('img.inventory-drop-image, img[src*="twitch-quests-assets/REWARD"], img[alt*="Drop"], img[alt*="drop"]');
-            claimedImgs.forEach(img => {
-                let card = img.parentElement;
-                for (let i = 0; i < 6 && card && card !== document.body; i++) {
-                    if (card.querySelector('p, span') && (card.innerText || '').length > 3) {
+            const claimedCards = new Set();
+            const invMain = document.querySelector('main, [role="main"]') || document.body;
+
+            // 1. Поиск по всем карточкам с метками времени (позавчера, вчера, сегодня, назад, ago, получено)
+            const dateNodes = Array.from(invMain.querySelectorAll('p, span, div, h4, h5, h6')).filter(el => {
+                if (el.children.length > 2) return false;
+                const t = (el.textContent || '').trim().toLowerCase();
+                return t === 'позавчера' || t === 'вчера' || t === 'сегодня' ||
+                       t === 'yesterday' || t === 'today' ||
+                       t.includes('назад') || t.includes('ago') ||
+                       t.includes('получено') || t.includes('claimed');
+            });
+
+            dateNodes.forEach(el => {
+                let card = el.parentElement;
+                for (let i = 0; i < 4 && card && card !== invMain; i++) {
+                    const text = (card.innerText || '').trim();
+                    const lines = text.split('\n').map(s => s.trim()).filter(Boolean);
+                    if (lines.length >= 2 && lines.length <= 8 && text.length > 4 && text.length < 300) {
+                        claimedCards.add(card);
                         break;
                     }
                     card = card.parentElement;
                 }
-                if (!card) card = img.parentElement;
+            });
 
+            // 2. Поиск по всем изображениям дропов
+            const claimedImgs = invMain.querySelectorAll('img');
+            claimedImgs.forEach(img => {
+                let card = img.parentElement;
+                for (let i = 0; i < 5 && card && card !== invMain; i++) {
+                    const text = (card.innerText || '').trim();
+                    if (text.length > 4 && text.length < 300) {
+                        claimedCards.add(card);
+                        break;
+                    }
+                    card = card.parentElement;
+                }
+            });
+
+            claimedCards.forEach(card => {
                 let dropName = '';
-                const alt = (img.getAttribute('alt') || '').trim();
-                if (alt) {
-                    dropName = alt.replace(/^(?:Изображение\s+Drop\s+для|Drop\s+image\s+for|Reward\s+image\s+for)\s*/i, '').trim();
+                const img = card.querySelector('img');
+                const alt = img ? (img.getAttribute('alt') || '').trim() : '';
+                if (alt && !alt.toLowerCase().includes('avatar') && !alt.toLowerCase().includes('logo')) {
+                    dropName = alt.replace(/^(?:изображение\s+(?:drop\s+)?для|изображение\s+для|drop\s+image\s+for|reward\s+image\s+for|image\s+for)\s*/i, '').trim();
                 }
-                if (!dropName && card) {
-                    const titleEl = card.querySelector('p.tw-strong, p[class*="strong"], [class*="title"], h5, h6, strong');
-                    if (titleEl) dropName = titleEl.textContent.trim();
-                }
-                if (!dropName && card) {
-                    const lines = (card.innerText || '').split('\n').map(s => s.trim()).filter(Boolean);
+
+                const cardText = (card.innerText || '').trim();
+                const lines = cardText.split('\n').map(s => s.trim()).filter(Boolean);
+
+                // Если нет alt или alt общий: извлекаем название из строк текста карточки!
+                if (!dropName || dropName.toLowerCase() === 'drop' || dropName.toLowerCase() === 'reward' || dropName.toLowerCase() === 'rust') {
                     for (const line of lines) {
                         const l = line.toLowerCase();
-                        if (line.length > 2 && line.length < 50 &&
-                            !line.includes('%') && !line.match(/\d+:\d+/) &&
-                            !l.includes('назад') && !l.includes('ago') &&
-                            !l.includes('вчера') && !l.includes('yesterday') &&
-                            !l.includes('получено') && !l.includes('claimed') &&
-                            !l.includes('drops')) {
-                            dropName = line;
-                            break;
-                        }
+                        if (line.length < 2 || line.length > 60) continue;
+                        if (line === '1' || line === '✓' || line === '✔' || !isNaN(Number(line))) continue;
+                        if (l === 'вчера' || l === 'позавчера' || l === 'сегодня' || l === 'yesterday' || l === 'today') continue;
+                        if (l.includes('назад') || l.includes('ago') || l.includes('получено') || l.includes('claimed')) continue;
+                        if (l.includes('%') || l.includes('gmt') || l.includes('utc') || l.match(/\d+:\d+/)) continue;
+                        if (l === 'rust' || l === 'twitch' || l === 'drops' || l === 'награды' || l === 'значок') continue;
+
+                        dropName = line;
+                        break;
                     }
                 }
 
                 let timeAgo = '';
-                if (card) {
-                    const cardText = card.innerText || '';
-                    const timeMatch = cardText.match(/(\d+\s*(?:час|мин|день|дня|дней|hour|min|day|вчера|yesterday|месяц|month|год|year)[^\n]*)/i);
-                    if (timeMatch) timeAgo = timeMatch[1].trim();
+                const timeMatch = cardText.match(/(\d+\s*(?:час|ч|мин|м|день|дня|дней|д|hour|h|min|m|day|d|вчера|позавчера|yesterday|месяц|month|год|year)[^\n]*)/i);
+                if (timeMatch) timeAgo = timeMatch[1].trim();
+                if (!timeAgo) {
+                    if (cardText.toLowerCase().includes('позавчера')) timeAgo = 'позавчера';
+                    else if (cardText.toLowerCase().includes('вчера')) timeAgo = 'вчера';
                 }
 
                 if (dropName) {
@@ -686,6 +790,370 @@ async function scrapeDropsInventory() {
     }
 }
 
+// =========================================================
+// Парсинг страницы кампаний Twitch Drops (/drops/campaigns)
+// =========================================================
+
+function getCampaignButtonsInPage() {
+    const buttons = Array.from(document.querySelectorAll('button[aria-expanded]'));
+    return buttons.filter(btn => {
+        const text = (btn.textContent || '');
+        return text.includes('GMT') || text.includes('UTC') ||
+               text.includes('сент') || text.includes('окт') || text.includes('нояб') || text.includes('дек') ||
+               text.includes('янв') || text.includes('фев') || text.includes('мар') || text.includes('апр') ||
+               text.includes('май') || text.includes('июн') || text.includes('июл') || text.includes('авг') ||
+               text.includes('день') || text.includes('дней') || text.includes('час') || text.includes('минут') ||
+               text.includes('day') || text.includes('hour') || text.includes('min');
+    });
+}
+
+async function waitForCampaignButtons(timeoutMs = 15000) {
+    const startTime = Date.now();
+    while (Date.now() - startTime < timeoutMs) {
+        const buttons = getCampaignButtonsInPage();
+        if (buttons.length > 0) {
+            return buttons;
+        }
+        await new Promise(r => setTimeout(r, 300));
+    }
+    return getCampaignButtonsInPage();
+}
+
+function parseCampaignButtonInfo(btn, index) {
+    const isExpanded = btn.getAttribute('aria-expanded') === 'true';
+    const imgEl = btn.querySelector('img');
+    const coverImg = imgEl ? (imgEl.src || '') : '';
+    const coverAlt = imgEl ? (imgEl.alt || '') : '';
+
+    const pTags = Array.from(btn.querySelectorAll('p')).map(p => (p.textContent || '').trim()).filter(Boolean);
+    const gameName = pTags[0] || coverAlt || 'Twitch Game';
+    const campaignTitle = pTags[1] || '';
+
+    let dateStr = '';
+    const dateEl = btn.querySelector('.bkUUaS, [class*="bkUUaS"]');
+    if (dateEl) {
+        dateStr = (dateEl.textContent || '').replace(/\s+/g, ' ').trim();
+    } else {
+        const allText = (btn.textContent || '');
+        const dMatch = allText.match(/([а-яa-z]{2,3},\s*\d{1,2}\s+[а-яa-z]+[\s\S]*?(?:GMT|UTC)[^\s<]*)/i);
+        if (dMatch) dateStr = dMatch[1].replace(/\s+/g, ' ').trim();
+    }
+
+    return {
+        index,
+        gameName,
+        campaignTitle,
+        coverImg,
+        dateStr,
+        isExpanded
+    };
+}
+
+async function scrapeCampaignsListInPage() {
+    try {
+        const buttons = await waitForCampaignButtons(15000);
+        const campaigns = buttons.map((b, i) => parseCampaignButtonInfo(b, i));
+        return { ok: true, campaigns };
+    } catch(err) {
+        return { ok: false, error: String(err) };
+    }
+}
+
+async function waitForExpandedContainer(targetBtn, timeoutMs = 12000) {
+    const startTime = Date.now();
+    let container = null;
+    let prevElementsCount = 0;
+    let stableChecks = 0;
+
+    while (Date.now() - startTime < timeoutMs) {
+        container = targetBtn.parentElement ? targetBtn.parentElement.nextElementSibling : null;
+        if (!container) container = targetBtn.nextElementSibling;
+        if (!container && targetBtn.parentElement && targetBtn.parentElement.parentElement) {
+            const grand = targetBtn.parentElement.parentElement;
+            const children = Array.from(grand.children);
+            const idx = children.indexOf(targetBtn.parentElement);
+            if (idx !== -1 && children[idx + 1]) {
+                container = children[idx + 1];
+            }
+        }
+
+        if (container) {
+            try {
+                // Прокручиваем страницу/контейнер, чтобы форсировать рендеринг ленивых секций в DOM (IntersectionObserver)
+                container.scrollIntoView({ behavior: 'instant', block: 'nearest' });
+                window.scrollBy(0, 400);
+            } catch(e) {}
+
+            const liCount = container.querySelectorAll('li').length;
+            const linkCount = container.querySelectorAll('a[href]').length;
+            const hrCount = container.querySelectorAll('hr').length;
+            const currentTotal = liCount + linkCount + hrCount;
+
+            if (currentTotal > 0) {
+                if (currentTotal === prevElementsCount) {
+                    stableChecks++;
+                    // Завершаем ожидание, если появились ссылки на каналы и количество стабилизировалось,
+                    // либо если элементов много и они не меняются
+                    if ((linkCount >= 2 && stableChecks >= 2) || (currentTotal > 15 && stableChecks >= 3) || (Date.now() - startTime > 4500 && stableChecks >= 2)) {
+                        break;
+                    }
+                } else {
+                    stableChecks = 0;
+                    prevElementsCount = currentTotal;
+                }
+            }
+        }
+        await new Promise(r => setTimeout(r, 400));
+    }
+
+    await new Promise(r => setTimeout(r, 300));
+    return container || (targetBtn.parentElement && targetBtn.parentElement.nextElementSibling) || targetBtn.nextElementSibling || targetBtn.parentElement || document.body;
+}
+
+async function expandAndScrapeCampaignInPage(targetGameName, targetIndex) {
+    try {
+        const buttons = await waitForCampaignButtons(15000);
+        let targetBtn = null;
+
+        // 1. Поиск по имени игры в первую очередь
+        if (targetGameName) {
+            const targetLower = targetGameName.toLowerCase().trim();
+            targetBtn = buttons.find(b => {
+                const text = (b.textContent || '').toLowerCase();
+                return text.includes(targetLower);
+            });
+        }
+
+        // 2. Если по имени не найдено, поиск по индексу
+        if (!targetBtn && typeof targetIndex === 'number' && targetIndex >= 0 && buttons[targetIndex]) {
+            targetBtn = buttons[targetIndex];
+        }
+
+        // 3. Fallback к первому
+        if (!targetBtn && buttons.length > 0) {
+            targetBtn = buttons[0];
+        }
+
+        if (!targetBtn) {
+            return { ok: false, error: 'Кампания не найдена на странице' };
+        }
+
+        try {
+            targetBtn.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        } catch(e) {}
+
+        // Если свернуто — раскрываем кликом
+        if (targetBtn.getAttribute('aria-expanded') !== 'true') {
+            targetBtn.click();
+        }
+
+        // Ждем отрисовку контента аккордеона со всеми секциями
+        const container = await waitForExpandedContainer(targetBtn, 12000);
+        const buttonInfo = parseCampaignButtonInfo(targetBtn, typeof targetIndex === 'number' ? targetIndex : 0);
+
+        // 1. Поиск категории
+        let categoryUrl = '';
+        const catLinks = Array.from(container.querySelectorAll('a[href*="/directory/category/"], a[href*="/directory/game/"]'));
+        if (catLinks.length > 0) {
+            categoryUrl = catLinks[0].href.split('?')[0].replace(/\/+$/, '');
+        }
+
+        // 2. Поиск секций дропов (разделенных <hr> или заголовками)
+        const streamerDrops = [];
+        const generalDrops = [];
+        const dropMedia = {};
+        const allCampaignStreamers = new Set();
+
+        const containerHtml = container.innerHTML || '';
+        let dropSectionsHtml = containerHtml.split(/<hr\b[^>]*>/gi);
+        if (dropSectionsHtml.length <= 1) {
+            const byLabel = containerHtml.split(/(?=<div[^>]*class="[^"]*drop-details__label[^"]*")/gi);
+            if (byLabel.length > 1) {
+                dropSectionsHtml = byLabel;
+            } else {
+                const byHeader = containerHtml.split(/(?=<strong[^>]*class="[^"]*QdNyA[^"]*")/gi);
+                if (byHeader.length > 1) {
+                    dropSectionsHtml = byHeader;
+                }
+            }
+        }
+
+        dropSectionsHtml.forEach((secHtml, idx) => {
+            // Пропуск платных подписочных дропов (sub / gift-sub), которые не за просмотр
+            const isSubDrop = (/подпишитесь|подписку|subscribe|gift\s+sub/i.test(secHtml)) && (!/смотрите\s+в\s+течение|watch\s+for|посмотрите/i.test(secHtml));
+            if (isSubDrop) return;
+
+            // Сбор стримеров из ссылок (как относительных /streamer, так и полных)
+            const sectionStreamers = new Set();
+            const linkMatches = [...secHtml.matchAll(/href="([^"]+)"[^>]*>([^<]+)<\/a>/gi)];
+            linkMatches.forEach(m => {
+                const href = m[1];
+                if (!categoryUrl && (href.includes('/directory/category/') || href.includes('/directory/game/'))) {
+                    categoryUrl = (href.startsWith('http') ? href : `https://www.twitch.tv${href}`).split('?')[0];
+                }
+                const userMatch = href.match(/(?:twitch\.tv\/|^|\/)([a-zA-Z0-9_]{3,30})$/i);
+                if (userMatch) {
+                    const u = userMatch[1].toLowerCase();
+                    const sys = ['directory', 'drops', 'inventory', 'campaigns', 'settings', 'subscriptions', 'wallet', 'p', 'about', 'help', 'rust', 'team', 'videos', 'jobs', 'blog', 'privacy', 'security'];
+                    if (!sys.includes(u)) {
+                        sectionStreamers.add(u);
+                        allCampaignStreamers.add(u);
+                    }
+                }
+            });
+
+            // Сбор картинок в секции с их alt
+            const imgMatches = [...secHtml.matchAll(/<img\b([^>]*)>/gi)];
+            const images = [];
+            imgMatches.forEach(im => {
+                const srcM = im[1].match(/src="([^"]+)"/i);
+                const altM = im[1].match(/alt="([^"]*)"/i);
+                if (srcM && !srcM[1].includes('partner-thumbnail')) {
+                    images.push({
+                        src: srcM[1],
+                        alt: altM ? altM[1].trim() : ''
+                    });
+                }
+            });
+
+            // Сбор наград и времени просмотра из элементов списка <li>
+            const liMatches = [...secHtml.matchAll(/<li\b[^>]*>([\s\S]*?)<\/li>/gi)];
+            const items = [];
+
+            liMatches.forEach(li => {
+                const liText = li[1].replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+                const timeMatch = liText.match(/(?:смотрите\s+в\s+течение|watch\s+(?:for\s+)?|посмотрите\s+в\s+течение)\s*(\d+)\s*(hour|hours|hr|h|час|часа|часов|minute|minutes|min|мин|минут|минуты)/i);
+                if (timeMatch) {
+                    const num = parseInt(timeMatch[1], 10);
+                    const unit = timeMatch[2].toLowerCase();
+                    let watchTime = '01:00:00';
+                    if (unit.startsWith('час') || unit.startsWith('h')) {
+                        watchTime = `${num.toString().padStart(2, '0')}:00:00`;
+                    } else {
+                        const h = Math.floor(num / 60);
+                        const m = num % 60;
+                        watchTime = `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:00`;
+                    }
+
+                    let rewardName = '';
+                    const nameMatch = liText.match(/(?:получите\s+награду|claim\s+(?:the\s+)?reward)\s+([^\.]+?)(?:\s*\(|$)/i);
+                    if (nameMatch) {
+                        rewardName = nameMatch[1].trim();
+                    }
+
+                    items.push({ rewardName, watchTime });
+                }
+            });
+
+            // Fallback если <li> не найдены, но есть заголовок или время в тексте
+            if (items.length === 0) {
+                const timeMatch = secHtml.match(/(?:смотрите\s+в\s+течение|watch\s+(?:for\s+)?|посмотрите\s+в\s+течение)\s*(\d+)\s*(hour|hours|hr|h|час|часа|часов|minute|minutes|min|мин|минут|минуты)/i);
+                if (timeMatch || images.length > 0) {
+                    let watchTime = '01:00:00';
+                    if (timeMatch) {
+                        const num = parseInt(timeMatch[1], 10);
+                        const unit = timeMatch[2].toLowerCase();
+                        if (unit.startsWith('час') || unit.startsWith('h')) {
+                            watchTime = `${num.toString().padStart(2, '0')}:00:00`;
+                        } else {
+                            const h = Math.floor(num / 60);
+                            const m = num % 60;
+                            watchTime = `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:00`;
+                        }
+                    }
+
+                    const strongHeader = secHtml.match(/<strong\b[^>]*>([^<]+)<\/strong>/i);
+                    const rName = (strongHeader && !['награды', 'как получить drop', 'как получить награду', 'обзор'].includes(strongHeader[1].toLowerCase().trim()))
+                        ? strongHeader[1].trim()
+                        : (images[0] && images[0].alt ? images[0].alt : `Награда ${idx + 1}`);
+
+                    items.push({ rewardName: rName, watchTime });
+                }
+            }
+
+            // Создаем объекты наград для каждого пункта
+            items.forEach((item, itemIdx) => {
+                const rName = item.rewardName || `Награда ${idx + 1}_${itemIdx + 1}`;
+                const safeName = rName.toLowerCase().replace(/[^a-z0-9а-яё]+/g, '_').replace(/^_+|_+$/g, '');
+                const hoursPart = parseInt(item.watchTime.split(':')[0], 10) || 1;
+                const dropId = `drop_${safeName}_${hoursPart}h${itemIdx > 0 ? '_' + (itemIdx + 1) : ''}`;
+
+                // Ищем наиболее подходящую картинку по названию
+                let matchedImg = images.find(im => im.alt && (
+                    im.alt.toLowerCase() === rName.toLowerCase() ||
+                    im.alt.toLowerCase().includes(rName.toLowerCase()) ||
+                    rName.toLowerCase().includes(im.alt.toLowerCase())
+                ));
+                if (!matchedImg && images[itemIdx]) matchedImg = images[itemIdx];
+                if (!matchedImg && images[0]) matchedImg = images[0];
+                const imageUrl = matchedImg ? matchedImg.src : '';
+
+                const dropObj = {
+                    dropId,
+                    name: rName,
+                    watchTime: item.watchTime,
+                    channels: Array.from(sectionStreamers).map(u => `https://www.twitch.tv/${u}`),
+                    imageUrl
+                };
+
+                if (dropObj.imageUrl) {
+                    dropMedia[dropId] = {
+                        imageUrl: dropObj.imageUrl,
+                        name: dropObj.name
+                    };
+                }
+
+                if (sectionStreamers.size > 0) {
+                    streamerDrops.push(dropObj);
+                } else {
+                    generalDrops.push(dropObj);
+                }
+            });
+        });
+
+
+        // Если категория не найдена из ссылок, строим по имени игры
+        if (!categoryUrl && buttonInfo.gameName) {
+            categoryUrl = `https://www.twitch.tv/directory/category/${buttonInfo.gameName.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`;
+        }
+
+        return {
+            ok: true,
+            campaign: {
+                meta: buttonInfo,
+                categoryUrl,
+                streamerDrops,
+                generalDrops,
+                dropMedia,
+                allCampaignStreamers: Array.from(allCampaignStreamers)
+            }
+        };
+    } catch(err) {
+        return { ok: false, error: String(err) };
+    }
+}
+
+function scrapeCategoryLiveChannelsInPage() {
+    try {
+        const links = Array.from(document.querySelectorAll('a[data-a-target="preview-card-channel-link"], a[data-a-target="preview-card-image-link"]'));
+        const channels = new Set();
+        links.forEach(a => {
+            const href = a.getAttribute('href') || '';
+            const m = href.match(/^\/([a-zA-Z0-9_]{3,30})$/i) || href.match(/twitch\.tv\/([a-zA-Z0-9_]{3,30})$/i);
+            if (m) {
+                const u = m[1].toLowerCase();
+                const sys = ['directory', 'drops', 'inventory', 'campaigns', 'settings', 'subscriptions', 'wallet', 'p', 'about', 'help'];
+                if (!sys.includes(u)) {
+                    channels.add(`https://www.twitch.tv/${m[1]}`);
+                }
+            }
+        });
+        return { ok: true, channels: Array.from(channels) };
+    } catch(err) {
+        return { ok: false, error: String(err) };
+    }
+}
+
 // Обработчик сообщений с обработкой ошибок
 try {
     chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
@@ -700,6 +1168,22 @@ try {
                     sendResponse({ ok: false, error: String(err) });
                 });
                 return true;
+            } else if (request.action === "scrapeCampaignsList") {
+                scrapeCampaignsListInPage().then(result => {
+                    sendResponse(result);
+                }).catch(err => {
+                    sendResponse({ ok: false, error: String(err) });
+                });
+                return true;
+            } else if (request.action === "expandAndScrapeCampaign") {
+                expandAndScrapeCampaignInPage(request.gameName, request.index).then(result => {
+                    sendResponse(result);
+                }).catch(err => {
+                    sendResponse({ ok: false, error: String(err) });
+                });
+                return true;
+            } else if (request.action === "scrapeCategoryChannels") {
+                sendResponse(scrapeCategoryLiveChannelsInPage());
             }
         } catch (err) {
             console.error("Ошибка в content.js при обработке сообщения:", err);

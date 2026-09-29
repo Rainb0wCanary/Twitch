@@ -62,6 +62,26 @@ let lastRenderedDropId = null;
 
 function updateCurrentTimer() {
     chrome.runtime.sendMessage({ action: "getCurrentStreamInfo" }, (resp) => {
+        // Обновление плашки активной кампании
+        const campBar = document.getElementById("popupCampaignBar");
+        const campNameEl = document.getElementById("popupCampaignName");
+        const campTimeEl = document.getElementById("popupCampaignTime");
+        if (resp && resp.campaign && campNameEl) {
+            campNameEl.textContent = resp.campaign.gameName || 'Twitch Кампания';
+            if (campTimeEl) {
+                campTimeEl.textContent = resp.campaign.timeLeftStr || 'Активна';
+                campTimeEl.className = 'popup-campaign-time' + (resp.campaign.isEnded ? ' is-ended' : '');
+            }
+            if (campBar) campBar.classList.add('has-campaign');
+        } else if (campNameEl) {
+            campNameEl.textContent = 'Кампания не выбрана';
+            if (campTimeEl) {
+                campTimeEl.textContent = 'Выбрать →';
+                campTimeEl.className = 'popup-campaign-time is-empty';
+            }
+            if (campBar) campBar.classList.remove('has-campaign');
+        }
+
         const div = document.getElementById("currentTimer");
         if (!div) return;
         if (resp && resp.url) {

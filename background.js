@@ -1064,6 +1064,15 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             const imageUrl = media.imageUrl || (chWithMedia && (chWithMedia.imageUrl || (chWithMedia.ch && chWithMedia.ch.imageUrl))) || '';
             const dropName = media.dropName || (chWithMedia && (chWithMedia.dropName || (chWithMedia.ch && chWithMedia.ch.dropName))) || dropId || '';
 
+            let campaignInfo = null;
+            if (cfg && cfg.campaign) {
+                const refreshedDates = TwitchCampaignParser.parseDates(cfg.campaign.dateStr);
+                campaignInfo = Object.assign({}, cfg.campaign, {
+                    timeLeftStr: refreshedDates.timeLeftStr || cfg.campaign.timeLeftStr,
+                    isEnded: refreshedDates.isEnded
+                });
+            }
+
             sendResponse({
                 url: cur.url,
                 secondsLeft: remaining,
@@ -1072,7 +1081,8 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                 dropId,
                 videoUrl,
                 imageUrl,
-                dropName
+                dropName,
+                campaign: campaignInfo
             });
         });
         return true;
@@ -1244,7 +1254,653 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         });
         return true;
     }
+    if (request.action === "getTwitchCampaigns") {
+        getTwitchCampaignsList(request.html, (result) => {
+            sendResponse(result);
+        });
+        return true;
+    }
+    if (request.action === "importTwitchCampaign") {
+        importTwitchCampaignAction(request, (result) => {
+            sendResponse(result);
+        });
+        return true;
+    }
+    if (request.action === "fetchCategoryLiveChannels") {
+        fetchCategoryLiveChannelsAction(request.categoryUrl, (result) => {
+            sendResponse(result);
+        });
+        return true;
+    }
+    if (request.action === "getCampaignTimeLeft") {
+        chrome.storage.local.get("userConfig", (data) => {
+            const cfg = data.userConfig || {};
+            if (cfg && cfg.campaign) {
+                const refreshed = TwitchCampaignParser.parseDates(cfg.campaign.dateStr);
+                cfg.campaign.timeLeftStr = refreshed.timeLeftStr;
+                cfg.campaign.isEnded = refreshed.isEnded;
+                sendResponse({ ok: true, campaign: cfg.campaign });
+            } else {
+                sendResponse({ ok: false, campaign: null });
+            }
+        });
+        return true;
+    }
 });
+
+// =========================================================
+// Универсальный парсер и менеджер кампаний Twitch Drops
+// =========================================================
+
+const TwitchCampaignParser = {
+    months: {
+        'янв': 0, 'января': 0, 'янв.': 0, 'jan': 0, 'january': 0,
+        'фев': 1, 'февраля': 1, 'фев.': 1, 'feb': 1, 'february': 1,
+        'мар': 2, 'марта': 2, 'мар.': 2, 'mar': 2, 'march': 2,
+        'апр': 3, 'апреля': 3, 'апр.': 3, 'apr': 3, 'april': 3,
+        'май': 4, 'мая': 4, 'may': 4,
+        'июн': 5, 'июня': 5, 'июн.': 5, 'jun': 5, 'june': 5,
+        'июл': 6, 'июля': 6, 'июл.': 6, 'jul': 6, 'july': 6,
+        'авг': 7, 'августа': 7, 'авг.': 7, 'aug': 7, 'august': 7,
+        'сен': 8, 'сент': 8, 'сент.': 8, 'сентября': 8, 'sep': 8, 'sept': 8, 'september': 8,
+        'окт': 9, 'окт.': 9, 'октября': 9, 'oct': 9, 'october': 9,
+        'ноя': 10, 'нояб': 10, 'нояб.': 10, 'ноября': 10, 'nov': 10, 'november': 10,
+        'дек': 11, 'дек.': 11, 'декабря': 11, 'dec': 11, 'december': 11
+    },
+
+    parseDates(dateStr) {
+        if (!dateStr) return { raw: '', endDate: null, timeLeftStr: 'Неизвестно', isEnded: false };
+        let endDate = null;
+        let timeLeftStr = 'Активна';
+        let isEnded = false;
+
+        try {
+            const parts = dateStr.split(/\s*[-–—]\s*/);
+            const endPart = (parts.length > 1 ? parts[1] : parts[0]).trim();
+
+            let gmtOffsetHours = 0;
+            const gmtMatch = dateStr.match(/(?:GMT|UTC)\s*([+-]\d+)?/i);
+            if (gmtMatch && gmtMatch[1]) {
+                gmtOffsetHours = parseInt(gmtMatch[1], 10);
+            }
+
+            let m = endPart.match(/(\d{1,2})\s+([а-яёa-z.]+)[,\s]+(\d{1,2}):(\d{2})/i);
+            if (!m) {
+                m = endPart.match(/([a-z]+)\s+(\d{1,2})[,\s]+(\d{1,2}):(\d{2})(?:\s*(am|pm))?/i);
+                if (m) {
+                    const mMonth = m[1];
+                    const mDay = m[2];
+                    let mHour = parseInt(m[3], 10);
+                    const mMins = m[4];
+                    const ampm = (m[5] || '').toLowerCase();
+                    if (ampm === 'pm' && mHour < 12) mHour += 12;
+                    if (ampm === 'am' && mHour === 12) mHour = 0;
+                    m = [m[0], mDay, mMonth, String(mHour), mMins];
+                }
+            }
+
+            if (m) {
+                const day = parseInt(m[1], 10);
+                const mStr = m[2].toLowerCase().replace(/\.$/, '');
+                const month = this.months[mStr] !== undefined ? this.months[mStr] : -1;
+                const hour = parseInt(m[3], 10);
+                const min = parseInt(m[4], 10);
+
+                if (month !== -1) {
+                    const now = new Date();
+                    let year = now.getFullYear();
+                    const targetUtc = Date.UTC(year, month, day, hour - gmtOffsetHours, min, 0);
+                    endDate = new Date(targetUtc);
+
+                    const diffMs = endDate.getTime() - now.getTime();
+                    if (diffMs <= 0) {
+                        timeLeftStr = 'Кампания завершена';
+                        isEnded = true;
+                    } else {
+                        const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+                        const diffHours = Math.floor((diffMs % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
+                        const diffMins = Math.floor((diffMs % (1000 * 60 * 60)) / (1000 * 60));
+
+                        if (diffDays > 0) {
+                            timeLeftStr = `Осталось: ${diffDays} д. ${diffHours} ч.`;
+                        } else if (diffHours > 0) {
+                            timeLeftStr = `Осталось: ${diffHours} ч. ${diffMins} мин.`;
+                        } else {
+                            timeLeftStr = `Осталось: ${diffMins} мин.`;
+                        }
+                    }
+                }
+            }
+        } catch (e) {
+            timeLeftStr = dateStr;
+        }
+
+        return { raw: dateStr.trim(), endDate: endDate ? endDate.getTime() : null, timeLeftStr, isEnded };
+    },
+
+    parseWatchTimeToHMS(text) {
+        if (!text) return '01:00:00';
+        const hMatch = text.match(/(\d+)\s*(?:hour|hours|hr|h|час|часа|часов)/i);
+        const mMatch = text.match(/(\d+)\s*(?:minute|minutes|min|мин|минут|минуты)/i);
+
+        let hours = hMatch ? parseInt(hMatch[1], 10) : 0;
+        let mins = mMatch ? parseInt(mMatch[1], 10) : 0;
+
+        if (hours === 0 && mins === 0) return '01:00:00';
+        if (mins >= 60) {
+            hours += Math.floor(mins / 60);
+            mins = mins % 60;
+        }
+        return `${hours.toString().padStart(2, '0')}:${mins.toString().padStart(2, '0')}:00`;
+    },
+
+    parseCampaignHeaders(fullHtml) {
+        const list = [];
+        const btnRegex = /<button\b[^>]*aria-expanded="([^"]*)"[^>]*>([\s\S]*?)<\/button>/gi;
+        let m;
+
+        while ((m = btnRegex.exec(fullHtml)) !== null) {
+            const inner = m[2];
+            if (!inner.includes('GMT') && !inner.includes('UTC')) continue;
+
+            const isExpanded = m[1] === 'true';
+            const imgM = inner.match(/<img\b[^>]*src="([^"]*)"[^>]*>/i);
+            const altM = inner.match(/<img\b[^>]*alt="([^"]*)"[^>]*>/i);
+            const coverImg = imgM ? imgM[1] : '';
+            const coverAlt = altM ? altM[1] : '';
+
+            const pTags = [...inner.matchAll(/<p\b[^>]*>([\s\S]*?)<\/p>/gi)].map(x => x[1].replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()).filter(Boolean);
+            const gameName = pTags[0] || coverAlt || 'Twitch Game';
+            const campaignTitle = pTags[1] || '';
+
+            const dateMatch = inner.match(/<div\b[^>]*class="[^"]*bkUUaS[^"]*"[^>]*>([\s\S]*?)<\/div>/i)
+                || inner.match(/([а-яa-z]{2,3},\s*\d{1,2}\s+[а-яa-z]+[\s\S]*?(?:GMT|UTC)[^\s<]*)/i);
+            const dateStr = dateMatch ? dateMatch[1].replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim() : '';
+
+            const dateInfo = this.parseDates(dateStr);
+
+            list.push({
+                index: list.length,
+                pos: m.index,
+                buttonLength: m[0].length,
+                gameName,
+                campaignTitle,
+                coverImg,
+                dateStr,
+                endDate: dateInfo.endDate,
+                timeLeftStr: dateInfo.timeLeftStr,
+                isEnded: dateInfo.isEnded,
+                isExpanded
+            });
+        }
+        return list;
+    },
+
+    extractCampaignChunk(fullHtml, campaignIndex, headersList) {
+        const list = headersList || this.parseCampaignHeaders(fullHtml);
+        if (campaignIndex < 0 || campaignIndex >= list.length) return null;
+        const cur = list[campaignIndex];
+        const next = list[campaignIndex + 1];
+        const endPos = next ? next.pos : fullHtml.lastIndexOf('</main>');
+        return fullHtml.substring(cur.pos, endPos > cur.pos ? endPos : fullHtml.length);
+    },
+
+    parseCampaignChunk(chunk) {
+        let categoryUrl = '';
+        const catMatch = chunk.match(/href="(https:\/\/(?:www\.)?twitch\.tv\/directory\/category\/[^"?]+)/i)
+            || chunk.match(/href="(\/directory\/category\/[^"?]+)/i);
+        if (catMatch) {
+            categoryUrl = (catMatch[1].startsWith('http') ? catMatch[1] : `https://www.twitch.tv${catMatch[1]}`).replace(/\/+$/, '');
+        }
+
+        const dropItemSections = chunk.split(/<hr\b[^>]*>/gi);
+        const streamerDrops = [];
+        const generalDrops = [];
+        const dropMedia = {};
+
+        dropItemSections.forEach((sec, idx) => {
+            const isSubDrop = (/подпишитесь|подписку|subscribe|gift\s+sub/i.test(sec)) && (!/смотрите\s+в\s+течение|watch\s+for|посмотрите/i.test(sec));
+            if (isSubDrop) return;
+
+            const channels = new Set();
+            const linkMatches = [...sec.matchAll(/href="([^"]+)"[^>]*>([^<]+)<\/a>/gi)];
+            linkMatches.forEach(m => {
+                const href = m[1];
+                const userMatch = href.match(/(?:twitch\.tv\/|^|\/)([a-zA-Z0-9_]{3,30})$/i);
+                if (userMatch) {
+                    const u = userMatch[1].toLowerCase();
+                    const sys = ['directory', 'drops', 'inventory', 'campaigns', 'settings', 'subscriptions', 'wallet', 'p', 'about', 'help', 'rust', 'team', 'videos', 'jobs', 'blog'];
+                    if (!sys.includes(u)) {
+                        channels.add(`https://www.twitch.tv/${u}`);
+                    }
+                }
+            });
+
+            // Картинки
+            const imgMatches = [...sec.matchAll(/<img\b([^>]*)>/gi)];
+            const images = [];
+            imgMatches.forEach(im => {
+                const srcM = im[1].match(/src="([^"]+)"/i);
+                const altM = im[1].match(/alt="([^"]*)"/i);
+                if (srcM && !srcM[1].includes('partner-thumbnail')) {
+                    images.push({ src: srcM[1], alt: altM ? altM[1].trim() : '' });
+                }
+            });
+
+            // Награды в li
+            const liMatches = [...sec.matchAll(/<li\b[^>]*>([\s\S]*?)<\/li>/gi)];
+            const items = [];
+
+            liMatches.forEach(li => {
+                const liText = li[1].replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+                const timeMatch = liText.match(/(?:смотрите\s+в\s+течение|watch\s+(?:for\s+)?|посмотрите\s+в\s+течение)\s*(\d+)\s*(hour|hours|hr|h|час|часа|часов|minute|minutes|min|мин|минут|минуты)/i);
+                if (timeMatch) {
+                    const num = parseInt(timeMatch[1], 10);
+                    const unit = timeMatch[2].toLowerCase();
+                    let watchTime = '01:00:00';
+                    if (unit.startsWith('час') || unit.startsWith('h')) {
+                        watchTime = `${num.toString().padStart(2, '0')}:00:00`;
+                    } else {
+                        const h = Math.floor(num / 60);
+                        const m = num % 60;
+                        watchTime = `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:00`;
+                    }
+
+                    let rewardName = '';
+                    const nameMatch = liText.match(/(?:получите\s+награду|claim\s+(?:the\s+)?reward)\s+([^\.]+?)(?:\s*\(|$)/i);
+                    if (nameMatch) {
+                        rewardName = nameMatch[1].trim();
+                    }
+
+                    items.push({ rewardName, watchTime });
+                }
+            });
+
+            if (items.length === 0) {
+                const timeMatch = sec.match(/(?:смотрите\s+в\s+течение|watch\s+(?:for\s+)?|посмотрите\s+в\s+течение)\s*(\d+)\s*(hour|hours|hr|h|час|часа|часов|minute|minutes|min|мин|минут|минуты)/i);
+                if (timeMatch || images.length > 0) {
+                    const watchTime = timeMatch ? this.parseWatchTimeToHMS(timeMatch[0]) : '01:00:00';
+                    const strongHeader = sec.match(/<strong\b[^>]*>([^<]+)<\/strong>/i);
+                    const rName = (strongHeader && !['награды', 'как получить drop', 'как получить награду', 'обзор'].includes(strongHeader[1].toLowerCase().trim()))
+                        ? strongHeader[1].trim()
+                        : (images[0] && images[0].alt ? images[0].alt : `Награда ${idx + 1}`);
+                    items.push({ rewardName: rName, watchTime });
+                }
+            }
+
+            items.forEach((item, itemIdx) => {
+                const rName = item.rewardName || `Награда ${idx + 1}_${itemIdx + 1}`;
+                const safeName = rName.toLowerCase().replace(/[^a-z0-9а-яё]+/g, '_').replace(/^_+|_+$/g, '');
+                const hoursPart = parseInt(item.watchTime.split(':')[0], 10) || 1;
+                const dropId = `drop_${safeName}_${hoursPart}h${itemIdx > 0 ? '_' + (itemIdx + 1) : ''}`;
+
+                let matchedImg = images.find(im => im.alt && (
+                    im.alt.toLowerCase() === rName.toLowerCase() ||
+                    im.alt.toLowerCase().includes(rName.toLowerCase()) ||
+                    rName.toLowerCase().includes(im.alt.toLowerCase())
+                ));
+                if (!matchedImg && images[itemIdx]) matchedImg = images[itemIdx];
+                if (!matchedImg && images[0]) matchedImg = images[0];
+                const imageUrl = matchedImg ? matchedImg.src : '';
+
+                const dropObj = {
+                    dropId,
+                    name: rName,
+                    watchTime: item.watchTime,
+                    channels: Array.from(channels),
+                    imageUrl
+                };
+
+                if (dropObj.imageUrl) {
+                    dropMedia[dropId] = {
+                        imageUrl: dropObj.imageUrl,
+                        name: dropObj.name
+                    };
+                }
+
+                if (channels.size > 0) {
+                    streamerDrops.push(dropObj);
+                } else {
+                    generalDrops.push(dropObj);
+                }
+            });
+        });
+
+        return { categoryUrl, streamerDrops, generalDrops, dropMedia };
+    },
+
+    buildConfig(campaignMeta, parsedDetails, existingConfig = {}) {
+        const categoryUrl = parsedDetails.categoryUrl || (campaignMeta.gameName ? `https://www.twitch.tv/directory/category/${campaignMeta.gameName.toLowerCase().replace(/[^a-z0-9]+/g, '-')}` : 'https://www.twitch.tv/directory');
+
+        const config = {
+            searchUrlPart: categoryUrl,
+            checkIntervalMinutes: existingConfig.checkIntervalMinutes || 1,
+            waitBeforeCheck: existingConfig.waitBeforeCheck !== undefined ? existingConfig.waitBeforeCheck : 20,
+            maxAttempts: existingConfig.maxAttempts || 5,
+            tempBlacklistSeconds: existingConfig.tempBlacklistSeconds || "0.05.00",
+            channels: [],
+            groupOrder: [],
+            blacklist: {},
+            dropMedia: Object.assign({}, existingConfig.dropMedia || {}, parsedDetails.dropMedia || {}),
+            campaign: {
+                gameName: campaignMeta.gameName,
+                title: campaignMeta.campaignTitle || '',
+                dateStr: campaignMeta.dateStr || '',
+                endDate: campaignMeta.endDate || null,
+                timeLeftStr: campaignMeta.timeLeftStr || 'Активна',
+                categoryUrl,
+                coverImg: campaignMeta.coverImg || ''
+            }
+        };
+
+        const hasStreamerDrops = parsedDetails.streamerDrops && parsedDetails.streamerDrops.length > 0;
+        // Если в кампании есть дропы конкретных стримеров — добавляем ТОЛЬКО их!
+        // Категорийные (общие) дропы фармятся фоном на твиче параллельно.
+        // Если же стримерских дропов в кампании нет — берем generalDrops.
+        const activeDrops = hasStreamerDrops ? parsedDetails.streamerDrops : (parsedDetails.generalDrops || []);
+
+        activeDrops.forEach(d => {
+            if (!config.groupOrder.includes(d.dropId)) {
+                config.groupOrder.push(d.dropId);
+            }
+            if (d.channels && d.channels.length > 0) {
+                d.channels.forEach(url => {
+                    config.channels.push({
+                        url,
+                        watchTime: d.watchTime,
+                        dropId: d.dropId,
+                        dropName: d.name,
+                        imageUrl: d.imageUrl || ''
+                    });
+                });
+            }
+        });
+
+        return config;
+    }
+};
+
+let cachedCampaignsTabId = null;
+let campaignsTabCloseTimeout = null;
+
+function resetCampaignsTabTimeout() {
+    if (campaignsTabCloseTimeout) {
+        clearTimeout(campaignsTabCloseTimeout);
+        campaignsTabCloseTimeout = null;
+    }
+    // Держим вкладку открытой 3 минуты для быстрых повторных выборов без перезагрузки страницы
+    campaignsTabCloseTimeout = setTimeout(() => {
+        if (cachedCampaignsTabId !== null) {
+            chrome.tabs.remove(cachedCampaignsTabId, () => {
+                if (chrome.runtime.lastError) {}
+                cachedCampaignsTabId = null;
+            });
+        }
+    }, 180000);
+}
+
+function openOrUseBackgroundTab(targetUrl, queryPattern, onReady) {
+    resetCampaignsTabTimeout();
+
+    function proceedWithTab(tab, wasCreated) {
+        cachedCampaignsTabId = tab.id;
+        onReady(tab, wasCreated);
+    }
+
+    if (cachedCampaignsTabId !== null) {
+        chrome.tabs.get(cachedCampaignsTabId, (tab) => {
+            if (!chrome.runtime.lastError && tab && tab.id) {
+                proceedWithTab(tab, false);
+                return;
+            }
+            cachedCampaignsTabId = null;
+            queryOrOpenTab();
+        });
+    } else {
+        queryOrOpenTab();
+    }
+
+    function queryOrOpenTab() {
+        chrome.tabs.query({ url: queryPattern }, (tabs) => {
+            if (tabs && tabs.length > 0) {
+                proceedWithTab(tabs[0], false);
+            } else {
+                chrome.tabs.create({ url: targetUrl, active: false }, (newTab) => {
+                    cachedCampaignsTabId = newTab.id;
+                    let loadAttempts = 0;
+                    const MAX_LOAD_WAIT_MS = 15000;
+                    const CHECK_INTERVAL_MS = 400;
+
+                    function waitForLoad() {
+                        chrome.tabs.get(newTab.id, (tab) => {
+                            if (chrome.runtime.lastError || !tab) return;
+                            if (tab.status === 'complete') {
+                                setTimeout(() => proceedWithTab(tab, true), 1000);
+                            } else if (loadAttempts * CHECK_INTERVAL_MS < MAX_LOAD_WAIT_MS) {
+                                loadAttempts++;
+                                setTimeout(waitForLoad, CHECK_INTERVAL_MS);
+                            } else {
+                                proceedWithTab(tab, true);
+                            }
+                        });
+                    }
+                    setTimeout(waitForLoad, 300);
+                });
+            }
+        });
+    }
+}
+
+function getTwitchCampaignsList(rawHtml, callback) {
+    if (typeof rawHtml === 'string' && rawHtml.length > 500) {
+        try {
+            const list = TwitchCampaignParser.parseCampaignHeaders(rawHtml);
+            callback && callback({ ok: true, campaigns: list, fromHtml: true });
+        } catch(err) {
+            callback && callback({ ok: false, error: 'Ошибка парсинга HTML: ' + err.message });
+        }
+        return;
+    }
+
+    const targetUrl = 'https://www.twitch.tv/drops/campaigns';
+    const queryPattern = '*://*.twitch.tv/drops/campaigns*';
+
+    log(`Запрос списка кампаний со страницы ${targetUrl}...`);
+
+    openOrUseBackgroundTab(targetUrl, queryPattern, (tab, wasCreated) => {
+        if (!tab || !tab.id) {
+            callback && callback({ ok: false, error: 'Не удалось открыть вкладку Twitch Drops' });
+            return;
+        }
+
+        chrome.tabs.sendMessage(tab.id, { action: "scrapeCampaignsList" }, (resp) => {
+            if (resp && resp.ok && Array.isArray(resp.campaigns)) {
+                resp.campaigns.forEach(c => {
+                    const parsedDates = TwitchCampaignParser.parseDates(c.dateStr);
+                    c.timeLeftStr = parsedDates.timeLeftStr;
+                    c.isEnded = parsedDates.isEnded;
+                    c.endDate = parsedDates.endDate;
+                });
+                callback && callback({ ok: true, campaigns: resp.campaigns });
+            } else {
+                callback && callback({ ok: false, error: (resp && resp.error) || 'Не удалось считать список кампаний с вкладки' });
+            }
+        });
+    });
+}
+
+function importTwitchCampaignAction(request, callback) {
+    const rawHtml = request.html;
+    const gameName = request.gameName || '';
+    const index = (typeof request.index === 'number') ? request.index : -1;
+
+    if (typeof rawHtml === 'string' && rawHtml.length > 500) {
+        try {
+            const headers = TwitchCampaignParser.parseCampaignHeaders(rawHtml);
+            let targetHeader = null;
+            let targetIdx = index;
+            if (targetIdx >= 0 && targetIdx < headers.length) {
+                targetHeader = headers[targetIdx];
+            } else if (gameName) {
+                const gnLower = gameName.toLowerCase().trim();
+                targetIdx = headers.findIndex(h => h.gameName.toLowerCase().includes(gnLower));
+                if (targetIdx !== -1) targetHeader = headers[targetIdx];
+            }
+
+            if (!targetHeader) {
+                targetHeader = headers[0];
+                targetIdx = 0;
+            }
+
+            if (!targetHeader) {
+                callback && callback({ ok: false, error: 'Кампания не найдена в переданном HTML' });
+                return;
+            }
+
+            const chunk = TwitchCampaignParser.extractCampaignChunk(rawHtml, targetIdx, headers);
+            const parsedDetails = TwitchCampaignParser.parseCampaignChunk(chunk);
+
+            chrome.storage.local.get("userConfig", (data) => {
+                const existingConfig = data.userConfig || {};
+                const newConfig = TwitchCampaignParser.buildConfig(targetHeader, parsedDetails, existingConfig);
+
+                chrome.storage.local.set({ userConfig: newConfig }, () => {
+                    log(`[Кампания] Успешно импортирована кампания "${targetHeader.gameName}" из HTML: каналов ${newConfig.channels.length}, групп наград ${newConfig.groupOrder.length}.`);
+                    handleUserConfigChanged(newConfig);
+                    callback && callback({
+                        ok: true,
+                        gameName: targetHeader.gameName,
+                        campaign: newConfig.campaign,
+                        channelsCount: newConfig.channels.length,
+                        groupsCount: newConfig.groupOrder.length,
+                        config: newConfig
+                    });
+                });
+            });
+        } catch(err) {
+            callback && callback({ ok: false, error: 'Ошибка импорта из HTML: ' + err.message });
+        }
+        return;
+    }
+
+    const targetUrl = 'https://www.twitch.tv/drops/campaigns';
+    const queryPattern = '*://*.twitch.tv/drops/campaigns*';
+
+    log(`[Кампания] Раскрытие и импорт кампании "${gameName}" с ${targetUrl}...`);
+
+    openOrUseBackgroundTab(targetUrl, queryPattern, (tab, wasCreated) => {
+        if (!tab || !tab.id) {
+            callback && callback({ ok: false, error: 'Не удалось подключиться к вкладке кампаний Twitch' });
+            return;
+        }
+
+        chrome.tabs.sendMessage(tab.id, {
+            action: "expandAndScrapeCampaign",
+            gameName,
+            index
+        }, (resp) => {
+            if (resp && resp.ok && resp.campaign) {
+                const cData = resp.campaign;
+                const meta = cData.meta || {};
+                const parsedDates = TwitchCampaignParser.parseDates(meta.dateStr);
+
+                const campaignMeta = {
+                    gameName: meta.gameName || gameName,
+                    campaignTitle: meta.campaignTitle || '',
+                    coverImg: meta.coverImg || '',
+                    dateStr: meta.dateStr || '',
+                    endDate: parsedDates.endDate,
+                    timeLeftStr: parsedDates.timeLeftStr,
+                    categoryUrl: cData.categoryUrl || ''
+                };
+
+                chrome.storage.local.get("userConfig", (data) => {
+                    const existingConfig = data.userConfig || {};
+                    const newConfig = TwitchCampaignParser.buildConfig(campaignMeta, cData, existingConfig);
+
+                    function finishSaveAndRespond() {
+                        chrome.storage.local.set({ userConfig: newConfig }, () => {
+                            log(`[Кампания] Успешно импортирована кампания "${campaignMeta.gameName}": каналов ${newConfig.channels.length}, групп наград ${newConfig.groupOrder.length}. До конца: ${campaignMeta.timeLeftStr}`);
+                            handleUserConfigChanged(newConfig);
+                            callback && callback({
+                                ok: true,
+                                gameName: campaignMeta.gameName,
+                                campaign: newConfig.campaign,
+                                channelsCount: newConfig.channels.length,
+                                groupsCount: newConfig.groupOrder.length,
+                                categoryUrl: newConfig.campaign.categoryUrl,
+                                config: newConfig
+                            });
+                        });
+                    }
+
+                    // Если в кампании нет каналов (чисто общие дропы категории),
+                    // сразу автоматически подтягиваем активные каналы из категории Twitch!
+                    if (newConfig.channels.length === 0 && newConfig.campaign && newConfig.campaign.categoryUrl) {
+                        log(`[Кампания] В кампании "${campaignMeta.gameName}" нет привязанных стримеров. Автоматический сбор активных стримов из категории ${newConfig.campaign.categoryUrl}...`);
+                        fetchCategoryLiveChannelsAction(newConfig.campaign.categoryUrl, (catResp) => {
+                            if (catResp && catResp.ok && Array.isArray(catResp.channels) && catResp.channels.length > 0) {
+                                const liveChannels = catResp.channels.slice(0, 10);
+                                const allDropIds = (newConfig.groupOrder && newConfig.groupOrder.length > 0) ? newConfig.groupOrder : ['drop_general'];
+                                allDropIds.forEach(dropId => {
+                                    liveChannels.forEach(chUrl => {
+                                        newConfig.channels.push({
+                                            url: chUrl,
+                                            watchTime: '01:00:00',
+                                            dropId: dropId,
+                                            dropName: campaignMeta.gameName || 'Общий дроп',
+                                            imageUrl: (newConfig.dropMedia && newConfig.dropMedia[dropId] && newConfig.dropMedia[dropId].imageUrl) || campaignMeta.coverImg || ''
+                                        });
+                                    });
+                                });
+                                log(`[Кампания] Автоматически добавлено ${newConfig.channels.length} стримеров из категории.`);
+                            }
+                            finishSaveAndRespond();
+                        });
+                    } else {
+                        finishSaveAndRespond();
+                    }
+                });
+            } else {
+                callback && callback({ ok: false, error: (resp && resp.error) || 'Не удалось извлечь данные кампании со страницы Twitch' });
+            }
+        });
+    });
+}
+
+function fetchCategoryLiveChannelsAction(categoryUrl, callback) {
+    if (!categoryUrl) {
+        callback && callback({ ok: false, error: 'Не указан URL категории' });
+        return;
+    }
+
+    const cleanCat = categoryUrl.split('?')[0].replace(/\/+$/, '');
+    const url = cleanCat.includes('filter=drops') ? cleanCat : `${cleanCat}?filter=drops`;
+    const queryPattern = `*://*.twitch.tv/directory/category/*`;
+
+    log(`[Категория] Сбор активных стримеров с ${url}...`);
+
+    openOrUseBackgroundTab(url, queryPattern, (tab, wasCreated) => {
+        if (!tab || !tab.id) {
+            callback && callback({ ok: false, error: 'Не удалось открыть категорию' });
+            return;
+        }
+
+        chrome.tabs.sendMessage(tab.id, { action: "scrapeCategoryChannels" }, (resp) => {
+            if (wasCreated) {
+                setTimeout(() => {
+                    chrome.tabs.remove(tab.id, () => { if (chrome.runtime.lastError) {} });
+                }, 10000);
+            }
+
+            if (resp && resp.ok && Array.isArray(resp.channels) && resp.channels.length > 0) {
+                callback && callback({ ok: true, channels: resp.channels });
+            } else {
+                callback && callback({ ok: false, error: 'На странице категории не найдено активных стримов' });
+            }
+        });
+    });
+}
 
 // =========================================================
 // Импорт дропов с Facepunch (Twitch и Kick)
@@ -1528,78 +2184,150 @@ async function scrapeDropsInventoryInPage() {
             return { ok: false, error: 'Вкладка не относится к Twitch или Kick: ' + location.href };
         }
 
-        // 1. Раскрытие свернутых секций
+        // 0. Ожидание начальной отрисовки DOM инвентаря (до 9 секунд)
+        if (isTwitch) {
+            for (let wait = 0; wait < 30; wait++) {
+                const hasHeadings = Array.from(document.querySelectorAll('h1, h2, h3, h4, h5, h6, div, p, span'))
+                    .some(el => {
+                        const t = (el.textContent || '').trim().toLowerCase();
+                        return t === 'получено' || t === 'claimed' || t === 'полученные награды' || t === 'claimed drops' || t.includes('текущие');
+                    });
+                const hasCards = document.querySelectorAll('img[src*="jtvnw.net"], img[src*="twitch-quests-assets"], img[alt*="Drop" i], img.inventory-drop-image, [role="progressbar"]').length > 0;
+                const isLoggedOut = !!document.querySelector('button[data-a-target="login-button"]');
+                if ((hasHeadings && hasCards) || isLoggedOut || (hasCards && wait > 6)) {
+                    break;
+                }
+                await new Promise(r => setTimeout(r, 300));
+            }
+        }
+
+        // 1. Раскрытие свернутых секций кампаний
         try {
             document.querySelectorAll('button[aria-expanded="false"]').forEach(btn => {
                 const txt = (btn.textContent || '').toLowerCase();
-                if (txt.includes('drop') || txt.includes('дроп') || txt.includes('rust') || txt.includes('campaign') || txt.includes('кампани')) {
-                    btn.click();
+                if (txt.includes('drop') || txt.includes('дроп') || txt.includes('rust') || txt.includes('campaign') || txt.includes('кампани') || txt.includes('описание')) {
+                    try { btn.click(); } catch(e) {}
                 }
             });
         } catch(e) {}
 
-        // 1.1. Раскрытие скрытых полученных наград в секции "Получено" / "Claimed"
-        try {
-            for (let iter = 0; iter < 6; iter++) {
-                // Ищем заголовок секции "Получено" / "Claimed"
-                const headings = Array.from(document.querySelectorAll('h1, h2, h3, h4, h5, h6, div, p, span'));
-                const claimedHeading = headings.find(el => {
-                    const t = (el.textContent || '').trim().toLowerCase();
-                    return t === 'получено' || t === 'claimed' || t === 'полученные награды' || t === 'claimed drops';
-                });
+        // 1.1. Раскрытие ВСЕХ порций наград в секции "Получено" / "Claimed" (включая вторую, третью двадцатки и т.д.)
+        if (isTwitch) {
+            try {
+                const countClaimedCards = () => {
+                    const main = document.querySelector('main, [role="main"]') || document.body;
+                    const dateEls = Array.from(main.querySelectorAll('p, span, div, h4, h5, h6')).filter(el => {
+                        if (el.children.length > 2) return false;
+                        const t = (el.textContent || '').trim().toLowerCase();
+                        return t === 'позавчера' || t === 'вчера' || t === 'сегодня' ||
+                               t === 'yesterday' || t === 'today' ||
+                               t.includes('назад') || t.includes('ago') ||
+                               t.includes('получено') || t.includes('claimed');
+                    });
 
-                let claimedSection = claimedHeading ? claimedHeading.parentElement : null;
-                while (claimedSection && claimedSection !== document.body) {
-                    if (claimedSection.querySelector('.tw-tower, [class*="tw-tower"]') || claimedSection.querySelector('img.inventory-drop-image')) {
+                    const cardContainers = new Set();
+                    dateEls.forEach(el => {
+                        let card = el.parentElement;
+                        for (let i = 0; i < 4 && card && card !== main; i++) {
+                            const lines = (card.innerText || '').split('\n').map(s => s.trim()).filter(Boolean);
+                            if (lines.length >= 2 && lines.length <= 8) {
+                                cardContainers.add(card);
+                                break;
+                            }
+                            card = card.parentElement;
+                        }
+                    });
+
+                    return Math.max(cardContainers.size, dateEls.length);
+                };
+
+                const findInventoryLoadMoreButton = () => {
+                    const main = document.querySelector('main, [role="main"]') || document.body;
+                    const allButtons = Array.from(main.querySelectorAll('button, [role="button"]'));
+
+                    return allButtons.find(b => {
+                        // Исключаем левую боковую панель, шапку и навигацию
+                        if (b.closest('nav, aside, [data-a-target="side-nav"], #side-nav, .side-nav, [role="navigation"]')) {
+                            return false;
+                        }
+                        if (b.disabled || b.getAttribute('aria-disabled') === 'true') return false;
+
+                        const txt = (b.textContent || '').replace(/\s+/g, ' ').trim().toLowerCase();
+                        const target = (b.getAttribute('data-a-target') || '').toLowerCase();
+                        const testSel = (b.getAttribute('data-test-selector') || '').toLowerCase();
+
+                        // Исключаем кнопки боковой панели канала ("показать еще", "отслеживаемое")
+                        if (txt.includes('показать') || txt.includes('отслеживаемое') || txt.includes('followed') || txt.includes('канал') || txt.includes('stream')) {
+                            return false;
+                        }
+
+                        // Ищем строго кнопку "Загрузить еще" / "Load more"
+                        return txt === 'загрузить еще' ||
+                               txt === 'загрузить ещё' ||
+                               txt === 'load more' ||
+                               txt.startsWith('загрузить еще') ||
+                               txt.startsWith('загрузить ещё') ||
+                               txt.startsWith('load more') ||
+                               (txt.includes('загрузить') && (txt.includes('еще') || txt.includes('ещё') || txt.includes('наград'))) ||
+                               target.includes('load-more') ||
+                               testSel.includes('load-more');
+                    });
+                };
+
+                for (let iter = 0; iter < 5; iter++) {
+                    window.scrollTo(0, document.body.scrollHeight);
+                    await new Promise(r => setTimeout(r, 400));
+
+                    const loadMoreBtn = findInventoryLoadMoreButton();
+                    if (!loadMoreBtn) break;
+
+                    const prevCount = countClaimedCards();
+
+                    try {
+                        loadMoreBtn.scrollIntoView({ behavior: 'instant', block: 'center' });
+                    } catch(e) {}
+
+                    const _force = loadMoreBtn.offsetHeight;
+                    const labelEl = loadMoreBtn.querySelector('[data-a-target="tw-core-button-label-text"]') || loadMoreBtn.firstElementChild || loadMoreBtn;
+
+                    try {
+                        const opts = { bubbles: true, cancelable: true, view: window, detail: 1, button: 0 };
+                        loadMoreBtn.dispatchEvent(new PointerEvent('pointerdown', opts));
+                        loadMoreBtn.dispatchEvent(new MouseEvent('mousedown', opts));
+                        loadMoreBtn.dispatchEvent(new PointerEvent('pointerup', opts));
+                        loadMoreBtn.dispatchEvent(new MouseEvent('mouseup', opts));
+                        loadMoreBtn.dispatchEvent(new MouseEvent('click', opts));
+                        loadMoreBtn.click();
+                        if (labelEl && labelEl !== loadMoreBtn) {
+                            labelEl.dispatchEvent(new MouseEvent('click', opts));
+                            labelEl.click();
+                        }
+                    } catch(e) {
                         break;
                     }
-                    claimedSection = claimedSection.parentElement;
-                }
 
-                const scope = claimedSection || document;
-                const buttons = Array.from(scope.querySelectorAll('button, [role="button"]'));
-                const loadMoreBtn = buttons.find(b => {
-                    if (!b || b.disabled || b.getAttribute('aria-disabled') === 'true') return false;
-                    const txt = (b.textContent || '').replace(/\s+/g, ' ').trim().toLowerCase();
-                    const target = (b.getAttribute('data-a-target') || '').toLowerCase();
-                    const hasLabel = !!b.querySelector('[data-a-target="tw-core-button-label-text"]');
-
-                    return txt.includes('загрузить еще') ||
-                           txt.includes('загрузить ещё') ||
-                           txt.includes('load more') ||
-                           txt.includes('show more') ||
-                           txt.includes('показать еще') ||
-                           txt.includes('показать ещё') ||
-                           target.includes('load-more') ||
-                           (hasLabel && (txt.includes('загрузить') || txt.includes('load')));
-                });
-
-                if (!loadMoreBtn) break;
-
-                const getCardsCount = () => scope.querySelectorAll('img.inventory-drop-image, img[src*="twitch-quests-assets/REWARD"], img[alt*="Drop"], img[alt*="drop"]').length;
-                const prevCount = getCardsCount();
-
-                const labelEl = loadMoreBtn.querySelector('[data-a-target="tw-core-button-label-text"]') || loadMoreBtn;
-                try {
-                    loadMoreBtn.click();
-                    if (labelEl !== loadMoreBtn) labelEl.click();
-                    labelEl.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
-                    loadMoreBtn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
-                } catch(e) {
-                    break;
-                }
-
-                let loadedNew = false;
-                for (let w = 0; w < 15; w++) {
-                    await new Promise(r => setTimeout(r, 200));
-                    if (getCardsCount() > prevCount) {
-                        loadedNew = true;
-                        break;
+                    // Ожидание подгрузки новых наград через GraphQL (до 7.5 секунд)
+                    let loadedNew = false;
+                    for (let w = 0; w < 25; w++) {
+                        await new Promise(r => setTimeout(r, 300));
+                        const curCount = countClaimedCards();
+                        if (curCount > prevCount) {
+                            loadedNew = true;
+                            window.scrollTo(0, document.body.scrollHeight);
+                            await new Promise(r => setTimeout(r, 400));
+                            break;
+                        }
+                        if (!document.body.contains(loadMoreBtn) || loadMoreBtn.disabled || loadMoreBtn.getAttribute('aria-disabled') === 'true') {
+                            await new Promise(r => setTimeout(r, 800));
+                            if (countClaimedCards() > prevCount) loadedNew = true;
+                            break;
+                        }
                     }
+
+                    if (!loadedNew) break;
                 }
-                if (!loadedNew) break;
-            }
-        } catch(e) {}
+            } catch(e) {}
+        }
 
         const drops = [];
         const processedKeys = new Set();
@@ -1679,7 +2407,7 @@ async function scrapeDropsInventoryInPage() {
 
         // 3. Парсинг DOM страниц (Twitch)
         if (isTwitch) {
-            // Поиск всех блоков строк кампаний в инвентаре
+            // Поиск всех блоков строк текущих кампаний в инвентаре
             const rowMarkers = Array.from(document.querySelectorAll('a, button, p, span, div')).filter(el => {
                 const t = (el.textContent || '').trim().toLowerCase();
                 return t === 'описание этого drop' || t === 'about this drop' || t.startsWith('описание этого drop') || t.startsWith('about this drop');
@@ -1726,7 +2454,7 @@ async function scrapeDropsInventoryInPage() {
                 }
             });
 
-            // Парсим каждый блок
+            // Парсим каждый блок текущих кампаний
             candidateRows.forEach(row => {
                 const rowText = row.innerText || '';
 
@@ -1815,47 +2543,79 @@ async function scrapeDropsInventoryInPage() {
             });
 
             // Парсинг уже полученных наград (секция "Получено" / "Claimed")
-            const claimedImgs = document.querySelectorAll('img.inventory-drop-image, img[src*="twitch-quests-assets/REWARD"], img[alt*="Drop"], img[alt*="drop"]');
-            claimedImgs.forEach(img => {
-                let card = img.parentElement;
-                for (let i = 0; i < 6 && card && card !== document.body; i++) {
-                    if (card.querySelector('p, span') && (card.innerText || '').length > 3) {
+            const claimedCards = new Set();
+            const invMain = document.querySelector('main, [role="main"]') || document.body;
+
+            // 1. Поиск по всем карточкам с метками времени (позавчера, вчера, сегодня, назад, ago, получено)
+            const dateNodes = Array.from(invMain.querySelectorAll('p, span, div, h4, h5, h6')).filter(el => {
+                if (el.children.length > 2) return false;
+                const t = (el.textContent || '').trim().toLowerCase();
+                return t === 'позавчера' || t === 'вчера' || t === 'сегодня' ||
+                       t === 'yesterday' || t === 'today' ||
+                       t.includes('назад') || t.includes('ago') ||
+                       t.includes('получено') || t.includes('claimed');
+            });
+
+            dateNodes.forEach(el => {
+                let card = el.parentElement;
+                for (let i = 0; i < 4 && card && card !== invMain; i++) {
+                    const text = (card.innerText || '').trim();
+                    const lines = text.split('\n').map(s => s.trim()).filter(Boolean);
+                    if (lines.length >= 2 && lines.length <= 8 && text.length > 4 && text.length < 300) {
+                        claimedCards.add(card);
                         break;
                     }
                     card = card.parentElement;
                 }
-                if (!card) card = img.parentElement;
+            });
 
+            // 2. Поиск по всем изображениям дропов
+            const claimedImgs = invMain.querySelectorAll('img');
+            claimedImgs.forEach(img => {
+                let card = img.parentElement;
+                for (let i = 0; i < 5 && card && card !== invMain; i++) {
+                    const text = (card.innerText || '').trim();
+                    if (text.length > 4 && text.length < 300) {
+                        claimedCards.add(card);
+                        break;
+                    }
+                    card = card.parentElement;
+                }
+            });
+
+            claimedCards.forEach(card => {
                 let dropName = '';
-                const alt = (img.getAttribute('alt') || '').trim();
-                if (alt) {
-                    dropName = alt.replace(/^(?:Изображение\s+Drop\s+для|Drop\s+image\s+for|Reward\s+image\s+for)\s*/i, '').trim();
+                const img = card.querySelector('img');
+                const alt = img ? (img.getAttribute('alt') || '').trim() : '';
+                if (alt && !alt.toLowerCase().includes('avatar') && !alt.toLowerCase().includes('logo')) {
+                    dropName = alt.replace(/^(?:изображение\s+(?:drop\s+)?для|изображение\s+для|drop\s+image\s+for|reward\s+image\s+for|image\s+for)\s*/i, '').trim();
                 }
-                if (!dropName && card) {
-                    const titleEl = card.querySelector('p.tw-strong, p[class*="strong"], [class*="title"], h5, h6, strong');
-                    if (titleEl) dropName = titleEl.textContent.trim();
-                }
-                if (!dropName && card) {
-                    const lines = (card.innerText || '').split('\n').map(s => s.trim()).filter(Boolean);
+
+                const cardText = (card.innerText || '').trim();
+                const lines = cardText.split('\n').map(s => s.trim()).filter(Boolean);
+
+                // Если нет alt или alt общий: извлекаем название из строк текста карточки!
+                if (!dropName || dropName.toLowerCase() === 'drop' || dropName.toLowerCase() === 'reward' || dropName.toLowerCase() === 'rust') {
                     for (const line of lines) {
                         const l = line.toLowerCase();
-                        if (line.length > 2 && line.length < 50 &&
-                            !line.includes('%') && !line.match(/\d+:\d+/) &&
-                            !l.includes('назад') && !l.includes('ago') &&
-                            !l.includes('вчера') && !l.includes('yesterday') &&
-                            !l.includes('получено') && !l.includes('claimed') &&
-                            !l.includes('drops')) {
-                            dropName = line;
-                            break;
-                        }
+                        if (line.length < 2 || line.length > 60) continue;
+                        if (line === '1' || line === '✓' || line === '✔' || !isNaN(Number(line))) continue;
+                        if (l === 'вчера' || l === 'позавчера' || l === 'сегодня' || l === 'yesterday' || l === 'today') continue;
+                        if (l.includes('назад') || l.includes('ago') || l.includes('получено') || l.includes('claimed')) continue;
+                        if (l.includes('%') || l.includes('gmt') || l.includes('utc') || l.match(/\d+:\d+/)) continue;
+                        if (l === 'rust' || l === 'twitch' || l === 'drops' || l === 'награды' || l === 'значок') continue;
+
+                        dropName = line;
+                        break;
                     }
                 }
 
                 let timeAgo = '';
-                if (card) {
-                    const cardText = card.innerText || '';
-                    const timeMatch = cardText.match(/(\d+\s*(?:час|мин|день|дня|дней|hour|min|day|вчера|yesterday|месяц|month|год|year)[^\n]*)/i);
-                    if (timeMatch) timeAgo = timeMatch[1].trim();
+                const timeMatch = cardText.match(/(\d+\s*(?:час|ч|мин|м|день|дня|дней|д|hour|h|min|m|day|d|вчера|позавчера|yesterday|месяц|month|год|year)[^\n]*)/i);
+                if (timeMatch) timeAgo = timeMatch[1].trim();
+                if (!timeAgo) {
+                    if (cardText.toLowerCase().includes('позавчера')) timeAgo = 'позавчера';
+                    else if (cardText.toLowerCase().includes('вчера')) timeAgo = 'вчера';
                 }
 
                 if (dropName) {
@@ -1936,20 +2696,6 @@ function findMatchingDropGroup(invDrop, config, knownGeneralDropNames = new Set(
         return null;
     }
 
-    // 2. Пропуск старых кампаний: если дроп прошлых месяцев/лет, проверяем, нет ли совпадения со стримером из конфига
-    const isOld = invDropObj.timeAgo && (invDropObj.timeAgo.includes('месяц') || invDropObj.timeAgo.includes('month') || invDropObj.timeAgo.includes('год') || invDropObj.timeAgo.includes('year'));
-    if (isOld) {
-        const normInv = (invName || '').toLowerCase().replace(/[^a-z0-9а-яё]/gi, '');
-        const hasStreamerMatch = (config.channels || []).some(ch => {
-            const user = (ch.url || '').split('/').filter(Boolean).pop().toLowerCase().replace(/[^a-z0-9а-яё]/gi, '');
-            const sNames = (ch.streamerNames || []).map(s => (s || '').toLowerCase().replace(/[^a-z0-9а-яё]/gi, '')).concat(user ? [user] : []);
-            return sNames.some(s => s && s.length > 2 && normInv.includes(s));
-        });
-        if (!hasStreamerMatch) {
-            return null;
-        }
-    }
-
     const norm = (s) => (s || '').toLowerCase().replace(/[^a-z0-9а-яё]/gi, '');
     const invStreamers = (invDropObj.streamers || []).map(norm).filter(Boolean);
 
@@ -1984,28 +2730,27 @@ function findMatchingDropGroup(invDrop, config, knownGeneralDropNames = new Set(
             .trim();
     };
 
+    const normInvFull = norm(invName);
+    const expandedInvFull = norm(expandAliases(invName));
     const cleanedInvName = cleanCampaignPrefix(invName);
     const expandedInv = expandAliases(cleanedInvName);
     const expandedInvNorm = norm(expandedInv);
 
-    // 3. Защита от общих дропов (если нет явного указания стримера)
-    const generalKeywords = ['hoodie', 'pants', 'work boots', 'boots', 'small box', 'sm box', 'large wood box', 'auto turret', 'turret', 'med box'];
-    const isGeneral = generalKeywords.some(g => cleanedInvName.toLowerCase() === g || cleanedInvName.toLowerCase().startsWith(g) || g.startsWith(cleanedInvName.toLowerCase()));
-    if (isGeneral && invStreamers.length === 0) {
-        return null;
-    }
-
-    // Построение карты групп из конфига
+    // 2. Построение карты групп из конфига
     const groupMap = {};
     (config.channels || []).forEach(ch => {
         if (!ch.dropId) return;
         if (!groupMap[ch.dropId]) {
+            const rawName = ch.dropName || '';
+            const cleanedDropName = cleanCampaignPrefix(rawName);
             groupMap[ch.dropId] = {
                 dropId: ch.dropId,
                 channels: [],
-                dropName: ch.dropName || '',
-                dropNameNorm: norm(ch.dropName || ''),
-                dropExpandedNorm: norm(expandAliases(ch.dropName || '')),
+                dropName: rawName,
+                dropNameNorm: norm(rawName),
+                dropExpandedNorm: norm(expandAliases(rawName)),
+                cleanedDropNameNorm: norm(cleanedDropName),
+                cleanedDropExpandedNorm: norm(expandAliases(cleanedDropName)),
                 streamers: new Set()
             };
         }
@@ -2024,26 +2769,17 @@ function findMatchingDropGroup(invDrop, config, knownGeneralDropNames = new Set(
     for (const [dropId, data] of Object.entries(groupMap)) {
         let score = 0;
 
-        // 1. Прямое совпадение стримера из инвентаря (+50 очков)
-        for (const st of invStreamers) {
-            if (data.streamers.has(st) || (st.length > 3 && Array.from(data.streamers).some(ds => ds.includes(st) || st.includes(ds)))) {
-                score += 50;
-                break;
-            }
+        // Точное совпадение полного названия (например, "Rust Isles SAR" === "Rust Isles SAR")
+        if (normInvFull && (normInvFull === data.dropNameNorm || expandedInvFull === data.dropExpandedNorm)) {
+            score += 150;
+        } else if (normInvFull.length > 3 && data.dropNameNorm && (data.dropNameNorm.includes(normInvFull) || normInvFull.includes(data.dropNameNorm))) {
+            score += 110;
         }
 
-        // 2. Совпадение имени стримера в названии предмета инвентаря (+20 очков)
-        for (const st of data.streamers) {
-            if (st.length > 2 && expandedInvNorm.includes(st)) {
-                score += 20;
-                break;
-            }
-        }
-
-        // 3. Совпадение названия предмета с учётом синонимов и префиксов
-        if (expandedInvNorm === data.dropExpandedNorm || expandedInvNorm === data.dropNameNorm) {
-            score += 100;
-        } else if (expandedInvNorm.length > 3 && (data.dropExpandedNorm.includes(expandedInvNorm) || expandedInvNorm.includes(data.dropExpandedNorm))) {
+        // Совпадение без префикса кампании и с синонимами (например, "SAR" === "SAR" или "semi automatic rifle")
+        if (expandedInvNorm && (expandedInvNorm === data.cleanedDropExpandedNorm || expandedInvNorm === data.cleanedDropNameNorm)) {
+            score += 90;
+        } else if (expandedInvNorm.length > 3 && data.cleanedDropExpandedNorm && (data.cleanedDropExpandedNorm.includes(expandedInvNorm) || expandedInvNorm.includes(data.cleanedDropExpandedNorm))) {
             score += 70;
         } else {
             // Пословное совпадение значимых токенов
@@ -2053,13 +2789,42 @@ function findMatchingDropGroup(invDrop, config, knownGeneralDropNames = new Set(
             for (const t of invTokens) {
                 if (dropTokens.includes(t)) matches++;
             }
-            if (matches > 0) score += matches * 30;
+            if (matches > 0) score += matches * 25;
+        }
+
+        // 1. Прямое совпадение стримера из инвентаря (+50 очков)
+        for (const st of invStreamers) {
+            if (data.streamers.has(st) || (st.length > 3 && Array.from(data.streamers).some(ds => ds.includes(st) || st.includes(ds)))) {
+                score += 50;
+                break;
+            }
+        }
+
+        // 2. Совпадение имени стримера в названии предмета инвентаря (+30 очков)
+        for (const st of data.streamers) {
+            if (st.length > 2 && (normInvFull.includes(st) || expandedInvNorm.includes(st))) {
+                score += 30;
+                break;
+            }
         }
 
         if (score > bestScore) {
             bestScore = score;
             bestGroup = dropId;
         }
+    }
+
+    // 3. Защита от общих/старых не относящихся к делу дропов
+    const generalKeywords = ['hoodie', 'pants', 'work boots', 'boots', 'small box', 'sm box', 'large wood box', 'auto turret', 'turret', 'med box'];
+    const isGeneral = generalKeywords.some(g => cleanedInvName.toLowerCase() === g || cleanedInvName.toLowerCase().startsWith(g) || g.startsWith(cleanedInvName.toLowerCase()));
+    if (isGeneral && invStreamers.length === 0 && bestScore < 80) {
+        return null;
+    }
+
+    // Пропуск старых дропов прошлых месяцев/лет, ЕСЛИ нет уверенного совпадения по названию или стримеру
+    const isOld = invDropObj.timeAgo && (invDropObj.timeAgo.includes('месяц') || invDropObj.timeAgo.includes('month') || invDropObj.timeAgo.includes('год') || invDropObj.timeAgo.includes('year'));
+    if (isOld && bestScore < 70) {
+        return null;
     }
 
     return bestScore >= 30 ? bestGroup : null;
@@ -2266,43 +3031,39 @@ function performInventorySync(requestedPlatform = 'auto', callback) {
             if (tabs && tabs.length > 0) {
                 const targetTab = tabs[0];
 
-                // Вкладка уже открыта — перезагружаем её чтобы данные были свежими
-                log(`[Инвентарь] Обновляем страницу инвентаря (вкладка ${targetTab.id})...`);
-                chrome.tabs.reload(targetTab.id, { bypassCache: true }, () => {
-                    // Ждём завершения загрузки страницы
-                    let loadTimeout = null;
-                    let loadAttempts = 0;
-                    const MAX_LOAD_WAIT_MS = 8000;
-                    const CHECK_INTERVAL_MS = 500;
-
-                    function waitForLoad() {
-                        chrome.tabs.get(targetTab.id, (tab) => {
-                            if (chrome.runtime.lastError || !tab) {
-                                // Вкладка закрыта пока ждали
-                                callback && callback({ ok: false, error: 'Вкладка инвентаря была закрыта во время обновления' });
-                                return;
-                            }
-                            if (tab.status === 'complete') {
-                                // Страница загружена — даём ещё 1.5 сек на рендер JS
-                                setTimeout(executeScrape, 1500);
-                            } else if (loadAttempts * CHECK_INTERVAL_MS < MAX_LOAD_WAIT_MS) {
-                                loadAttempts++;
-                                loadTimeout = setTimeout(waitForLoad, CHECK_INTERVAL_MS);
-                            } else {
-                                // Таймаут — всё равно пробуем парсить
-                                log(`[Инвентарь] Страница долго грузится, пробуем считать данные...`);
-                                executeScrape();
-                            }
-                        });
-                    }
-
-                    // Небольшая задержка перед первой проверкой статуса (reload не мгновенный)
-                    loadTimeout = setTimeout(waitForLoad, 300);
-                });
-
                 let attempts = 0;
-                function executeScrape() {
+                let reloaded = false;
 
+                function reloadAndScrape() {
+                    if (reloaded) {
+                        callback && callback({ ok: false, error: 'Не удалось считать данные из инвентаря после перезагрузки' });
+                        return;
+                    }
+                    reloaded = true;
+                    log(`[Инвентарь] Перезагружаем вкладку ${targetTab.id}...`);
+                    chrome.tabs.reload(targetTab.id, { bypassCache: true }, () => {
+                        let loadAttempts = 0;
+                        function waitForLoad() {
+                            chrome.tabs.get(targetTab.id, (tab) => {
+                                if (chrome.runtime.lastError || !tab) {
+                                    callback && callback({ ok: false, error: 'Вкладка инвентаря была закрыта во время обновления' });
+                                    return;
+                                }
+                                if (tab.status === 'complete') {
+                                    setTimeout(executeScrape, 2000);
+                                } else if (loadAttempts < 16) {
+                                    loadAttempts++;
+                                    setTimeout(waitForLoad, 500);
+                                } else {
+                                    executeScrape();
+                                }
+                            });
+                        }
+                        setTimeout(waitForLoad, 500);
+                    });
+                }
+
+                function executeScrape() {
                     attempts++;
                     try {
                         chrome.scripting.executeScript({
@@ -2315,8 +3076,10 @@ function performInventorySync(requestedPlatform = 'auto', callback) {
                                 safeSendMessage(targetTab.id, { action: "scrapeInventory" }, (msgResp) => {
                                     if (msgResp && msgResp.ok && Array.isArray(msgResp.drops) && msgResp.drops.length > 0) {
                                         applyInventoryData(msgResp.platform || platform, msgResp.drops, callback);
+                                    } else if (!reloaded) {
+                                        reloadAndScrape();
                                     } else if (attempts < 3) {
-                                        setTimeout(executeScrape, 1200);
+                                        setTimeout(executeScrape, 1500);
                                     } else {
                                         const err = (resp && resp.error) || (msgResp && msgResp.error) || 'Не удалось считать данные из открытой вкладки инвентаря';
                                         log(`[Инвентарь] Ошибка считывания: ${err}`);
@@ -2328,8 +3091,10 @@ function performInventorySync(requestedPlatform = 'auto', callback) {
 
                             if (Array.isArray(resp.drops) && resp.drops.length > 0) {
                                 applyInventoryData(resp.platform || platform, resp.drops, callback);
+                            } else if (!reloaded) {
+                                reloadAndScrape();
                             } else if (attempts < 3) {
-                                setTimeout(executeScrape, 1200);
+                                setTimeout(executeScrape, 1500);
                             } else {
                                 if (resp.isLoggedOut) {
                                     callback && callback({ ok: false, error: `Вы не авторизованы на ${platform.toUpperCase()}. Войдите на странице инвентаря.` });
@@ -2339,14 +3104,25 @@ function performInventorySync(requestedPlatform = 'auto', callback) {
                             }
                         });
                     } catch (e) {
-                        safeSendMessage(targetTab.id, { action: "scrapeInventory" }, (msgResp) => {
-                            if (msgResp && msgResp.ok && Array.isArray(msgResp.drops)) {
-                                applyInventoryData(msgResp.platform || platform, msgResp.drops, callback);
-                            } else {
-                                callback && callback({ ok: false, error: e.message });
-                            }
-                        });
+                        if (!reloaded) {
+                            reloadAndScrape();
+                        } else {
+                            safeSendMessage(targetTab.id, { action: "scrapeInventory" }, (msgResp) => {
+                                if (msgResp && msgResp.ok && Array.isArray(msgResp.drops)) {
+                                    applyInventoryData(msgResp.platform || platform, msgResp.drops, callback);
+                                } else {
+                                    callback && callback({ ok: false, error: e.message });
+                                }
+                            });
+                        }
                     }
+                }
+
+                // Если вкладка уже загружена (status complete), парсим сразу без лишней перезагрузки!
+                if (targetTab.status === 'complete') {
+                    executeScrape();
+                } else {
+                    reloadAndScrape();
                 }
 
                 // Запуск парсинга происходит внутри waitForLoad() после полной перезагрузки страницы
@@ -2384,7 +3160,7 @@ function performInventorySync(requestedPlatform = 'auto', callback) {
                             cleanup();
                             callback && callback({ ok: false, error: e.message });
                         }
-                    }, 4500);
+                    }, 5500);
                 });
             }
         });
