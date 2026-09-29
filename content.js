@@ -87,6 +87,7 @@ function isStreamerOnline() {
         }
 
         // КРИТИЧНО: если видим видеоплеер БЕЗ источника и нет явного 'В ЭФИРЕ' — считаем ОФФЛАЙН
+        // КРИТИЧНО: если видим видеоплеер БЕЗ источника и нет явного 'В ЭФИРЕ' — считаем ОФФЛАЙН
         // (Twitch добавляет пустой <video> на офлайн-страницы, чтобы зарезервировать место)
         if (videoElement && !videoElement.currentSrc && !videoElement.src) {
             return false; // Пустой видеоплеер = оффлайн
@@ -99,6 +100,49 @@ function isStreamerOnline() {
         return true;
     }
 }
+
+// Автоматический запуск видео и предотвращение остановки Twitch Drops
+function ensureStreamPlayback() {
+    try {
+        const isTwitch = location.hostname.includes('twitch.tv');
+        const isKick = location.hostname.includes('kick.com');
+        if (!isTwitch && !isKick) return;
+        if (location.pathname.includes('/drops/inventory')) return;
+
+        const video = document.querySelector('video');
+        if (video) {
+            // Если видео на паузе — возобновляем воспроизведение
+            if (video.paused) {
+                video.play().catch(() => {});
+            }
+            // Внутри HTML5 плеера звук должен быть активен (video.muted = false, volume >= 0.2),
+            // иначе Twitch считает просмотр неактивным. Сама вкладка заглушена на уровне браузера.
+            if (video.muted) {
+                video.muted = false;
+            }
+            if (typeof video.volume === 'number' && video.volume < 0.2) {
+                video.volume = 0.5;
+            }
+        }
+
+        // Клик по оверлеям "Нажмите, чтобы смотреть" или "Возобновить"
+        if (isTwitch) {
+            const overlayBtn = document.querySelector('[data-a-target="player-overlay-click-to-unmute"], [data-a-target="content-classification-gate-overlay-start-watching-button"]');
+            if (overlayBtn) {
+                try { overlayBtn.click(); } catch(e) {}
+            }
+            const playBtn = document.querySelector('button[data-a-target="player-play-pause-button"][aria-label*="Play"], button[data-a-target="player-play-pause-button"][aria-label*="Воспроизвести"]');
+            if (playBtn) {
+                try { playBtn.click(); } catch(e) {}
+            }
+        }
+    } catch(e) {}
+}
+
+setInterval(ensureStreamPlayback, 12000);
+setTimeout(ensureStreamPlayback, 2000);
+setTimeout(ensureStreamPlayback, 5000);
+
 
 function findAndHighlightLink(searchText) {
     try {

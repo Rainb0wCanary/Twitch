@@ -438,17 +438,20 @@ function setStreamTab(url, cb) {
             chrome.tabs.get(streamTabId, tab => {
                 if (chrome.runtime.lastError || !tab) {
                     chrome.tabs.create({ windowId: streamWindowId, url, active: true }, newTab => {
-                        if (newTab) streamTabId = newTab.id;
+                        if (newTab) {
+                            streamTabId = newTab.id;
+                            try { chrome.tabs.update(streamTabId, { muted: true }); } catch (e) {}
+                        }
                         currentStreamInfo = { url, secondsLeft: 0 };
                         cb && cb();
                     });
                 } else {
                     if (tab.windowId !== streamWindowId) {
                         chrome.tabs.move(streamTabId, { windowId: streamWindowId, index: -1 }, () => {
-                            chrome.tabs.update(streamTabId, { url, active: true }, () => cb && cb());
+                            chrome.tabs.update(streamTabId, { url, active: true, muted: true }, () => cb && cb());
                         });
                     } else {
-                        chrome.tabs.update(streamTabId, { url, active: true }, () => {
+                        chrome.tabs.update(streamTabId, { url, active: true, muted: true }, () => {
                             currentStreamInfo = { url, secondsLeft: 0 };
                             cb && cb();
                         });
@@ -457,7 +460,10 @@ function setStreamTab(url, cb) {
             });
         } else {
             chrome.tabs.create({ windowId: streamWindowId, url, active: true }, newTab => {
-                if (newTab) streamTabId = newTab.id;
+                if (newTab) {
+                    streamTabId = newTab.id;
+                    try { chrome.tabs.update(streamTabId, { muted: true }); } catch (e) {}
+                }
                 currentStreamInfo = { url, secondsLeft: 0 };
                 cb && cb();
             });
@@ -824,6 +830,7 @@ function startWatchTimer(tabId, url, initialWatchTime) {
         log(`DEBUG: startWatchTimer for ${url}${dropId ? ` (group: ${dropId})` : ''}, watchTime=${liveWatchTime}, alreadyWatched=${alreadyWatched}, runId=${myRunId}`);
         
         let timerStopped = false;
+        let verifyingTwitchCompletion = false;
         let checkIntervalMs = 2 * 60 * 1000;
         if (config && typeof config.checkIntervalMinutes === "number" && config.checkIntervalMinutes > 0) {
             checkIntervalMs = config.checkIntervalMinutes * 60 * 1000;
@@ -860,34 +867,53 @@ function startWatchTimer(tabId, url, initialWatchTime) {
                 chrome.storage.local.set({ totalWatched });
 
                 const isFinished = (currentTargetTime > 0 && currentGroupWatched >= currentTargetTime) || (currentTargetTime > 0 && secondsLeft <= 0);
-
                 if (isFinished) {
-                    if (liveConfig && typeof liveConfig.blacklist === 'object' && !Array.isArray(liveConfig.blacklist)) {
-                        const groupUrls = liveDropId ? getDropGroupUrls(liveDropId, liveConfig) : [url];
-                        let needUpdate = false;
-                        for (const groupUrl of groupUrls) {
-                            if (liveConfig.blacklist[groupUrl] !== 'permanent') {
-                                liveConfig.blacklist[groupUrl] = 'permanent';
-                                needUpdate = true;
+                    if (timerStopped || verifyingTwitchCompletion) return;
+                    verifyingTwitchCompletion = true;
+
+                    log(`[Таймер] Расчётное время на ${url} подошло к концу (${secondsToHMS(currentGroupWatched)} / ${secondsToHMS(currentTargetTime)}). Проверяем подтверждение 100% на Twitch...`);
+
+                    performInventorySync('auto', () => {
+                        chrome.storage.local.get(['userConfig', 'totalWatched'], (vData) => {
+                            verifyingTwitchCompletion = false;
+                            const vCfg = vData.userConfig || liveConfig;
+                            const vWatched = vData.totalWatched || totalWatched;
+                            const vGroupWatched = liveDropId ? getDropGroupWatchedTime(liveDropId, vCfg, vWatched) : (vWatched[url] || 0);
+                            const vTarget = getChannelTargetWatchTime(url, vCfg) || currentTargetTime;
+                            const groupUrls = liveDropId ? getDropGroupUrls(liveDropId, vCfg) : [url];
+
+                            const isPermanentlyDone = groupUrls.every(u => vCfg.blacklist && vCfg.blacklist[u] === 'permanent');
+                            const isTwitch100 = (vTarget > 0 && vGroupWatched >= vTarget);
+
+                            if (isPermanentlyDone || isTwitch100) {
+                                let needUpdate = false;
+                                for (const groupUrl of groupUrls) {
+                                    if (!vCfg.blacklist) vCfg.blacklist = {};
+                                    if (vCfg.blacklist[groupUrl] !== 'permanent') {
+                                        vCfg.blacklist[groupUrl] = 'permanent';
+                                        needUpdate = true;
+                                    }
+                                }
+                                if (liveDropId && Array.isArray(vCfg.groupOrder)) {
+                                    vCfg.groupOrder = sortGroupIdsByProgress(vCfg.groupOrder, vCfg, vWatched);
+                                    needUpdate = true;
+                                }
+                                if (needUpdate) {
+                                    syncConfigState(vCfg);
+                                    chrome.storage.local.set({ userConfig: vCfg });
+                                }
+                                if (watchTimerInterval) { clearInterval(watchTimerInterval); watchTimerInterval = null; }
+                                if (watchLinkCheckInterval) { clearInterval(watchLinkCheckInterval); watchLinkCheckInterval = null; }
+                                timerStopped = true;
+                                currentStreamInfo = { url: null, secondsLeft: 0 };
+                                log(`[100% Готово] Дроп '${liveDropId || url}' подтверждён Twitch на 100%! Переход к следующему каналу.`);
+                                nextChannel();
+                            } else {
+                                const pct = vTarget > 0 ? Math.round((vGroupWatched / vTarget) * 100) : 0;
+                                log(`[Ожидание Twitch] На Twitch зафиксировано ${pct}% (${secondsToHMS(vGroupWatched)} из ${secondsToHMS(vTarget)}). Продолжаем досмотр до честных 100% на сервере...`);
                             }
-                        }
-                        // Перемещаем завершенную группу в самый низ приоритета единожды и актуализируем порядок (ближе к завершению -> вверху, 0% -> в середине, 100% -> внизу)
-                        if (liveDropId && Array.isArray(liveConfig.groupOrder)) {
-                            liveConfig.groupOrder = sortGroupIdsByProgress(liveConfig.groupOrder, liveConfig, totalWatched);
-                            needUpdate = true;
-                            log(`Группа '${liveDropId}' завершена на 100% и перемещена в самый низ приоритета. Порядок актуализирован.`);
-                        }
-                        if (needUpdate) {
-                            syncConfigState(liveConfig);
-                            chrome.storage.local.set({ userConfig: liveConfig });
-                        }
-                    }
-                    if (watchTimerInterval) { clearInterval(watchTimerInterval); watchTimerInterval = null; }
-                    if (watchLinkCheckInterval) { clearInterval(watchLinkCheckInterval); watchLinkCheckInterval = null; }
-                    timerStopped = true;
-                    currentStreamInfo = { url: null, secondsLeft: 0 };
-                    log(`Время на ${url} истекло (лимит группы/канала достигнут: ${secondsToHMS(currentGroupWatched)} / ${secondsToHMS(currentTargetTime)}).`);
-                    nextChannel();
+                        });
+                    });
                     return;
                 }
             });
@@ -1970,12 +1996,26 @@ function findMatchingDropGroup(invDrop, config, knownGeneralDropNames = new Set(
     return bestScore >= 30 ? bestGroup : null;
 }
 
+let lastInventoryApplyTime = 0;
+let lastInventoryPayloadHash = '';
+let activeStreamProgressTracker = { url: null, dropId: null, lastPercentage: null, stuckSince: 0 };
+
 function applyInventoryData(platform, scrapedDrops, callback) {
     if (!Array.isArray(scrapedDrops) || scrapedDrops.length === 0) {
         log(`[Инвентарь ${platform}] Данные инвентаря пусты или не найдены.`);
         callback && callback({ ok: false, error: 'В инвентаре не найдено активных дропов (возможно, вы не авторизованы)' });
         return;
     }
+
+    // Дедупликация: если точь-в-точь те же данные пришли в течение 4 секунд — не дублируем обработку и логи
+    const payloadHash = platform + ':' + scrapedDrops.map(d => `${d.name}:${d.percentage}:${d.isClaimed}`).join('|');
+    const now = Date.now();
+    if (now - lastInventoryApplyTime < 4000 && lastInventoryPayloadHash === payloadHash) {
+        callback && callback({ ok: true, synced: true, skippedDuplicate: true });
+        return;
+    }
+    lastInventoryApplyTime = now;
+    lastInventoryPayloadHash = payloadHash;
 
     chrome.storage.local.get(["userConfig", "totalWatched"], (data) => {
         const config = data.userConfig || { channels: [] };
@@ -2032,26 +2072,25 @@ function applyInventoryData(platform, scrapedDrops, callback) {
                 }
             } else if (invDrop.percentage > 0) {
                 const calculatedWatched = Math.floor(targetSec * (invDrop.percentage / 100));
-                // Если группа уже выполнена локально — Twitch ещё не обновил процент, игнорируем понижение
-                const localWatched = watched[firstUrl] || 0;
-                const locallyCompleted = targetSec > 0 && localWatched >= targetSec;
-                const allInBlacklist = groupChannels.every(ch => config.blacklist[ch.url] === 'permanent');
-                if (locallyCompleted || allInBlacklist) {
-                    // Группа уже завершена локально или в ЧС — не откатываем прогресс
-                    log(`[Инвентарь] Дроп "${matchedDropId}" (${invDrop.name}) — Twitch сообщает ${invDrop.percentage}%, но локально уже завершён. Пропускаем.`);
-                } else {
-                    watched[firstUrl] = calculatedWatched;
-                    // Снимаем из ЧС только если группа действительно не завершена
-                    groupChannels.forEach(ch => {
-                        if (config.blacklist[ch.url] === 'permanent') {
-                            delete config.blacklist[ch.url];
-                            updatedAny = true;
-                        }
-                    });
-                    updatedAny = true;
-                    syncedCount++;
-                    log(`[Инвентарь] Дроп "${matchedDropId}" (${invDrop.name}) синхронизирован: ${invDrop.percentage}% (${secondsToHMS(calculatedWatched)}).`);
+                watched[firstUrl] = calculatedWatched;
+                
+                // Twitch — высший авторитет. Если на Twitch < 100%, а канал был в permanent ЧС,
+                // снимаем постоянный ЧС, чтобы бот мог честно досмотреть его до конца
+                let unbannedAny = false;
+                groupChannels.forEach(ch => {
+                    if (config.blacklist[ch.url] === 'permanent') {
+                        delete config.blacklist[ch.url];
+                        unbannedAny = true;
+                        updatedAny = true;
+                    }
+                });
+                if (unbannedAny) {
+                    log(`[Синхронизация] Дроп "${matchedDropId}" снят с постоянного ЧС: на Twitch ${invDrop.percentage}%, требуется досмотреть.`);
                 }
+
+                updatedAny = true;
+                syncedCount++;
+                log(`[Инвентарь] Дроп "${matchedDropId}" (${invDrop.name}) синхронизирован: ${invDrop.percentage}% (${secondsToHMS(calculatedWatched)}).`);
             } else {
                 untouchedCount++;
                 // 0% - не тронут
@@ -2069,6 +2108,46 @@ function applyInventoryData(platform, scrapedDrops, callback) {
                 if (changedUntouched) updatedAny = true;
             }
         });
+
+        // Сторожевой таймер: проверка, начисляется ли прогресс на текущем активном стриме
+        const currentUrl = (currentStreamInfo && currentStreamInfo.url);
+        if (currentUrl && isRunning) {
+            const currentDropId = getDropId(currentUrl, config);
+            if (currentDropId) {
+                const activeInvDrop = scrapedDrops.find(d => {
+                    const mId = findMatchingDropGroup(d, config, generalDropNames);
+                    return mId === currentDropId;
+                });
+
+                if (activeInvDrop && activeInvDrop.percentage < 100 && !activeInvDrop.isClaimed) {
+                    const curPct = activeInvDrop.percentage;
+                    const now = Date.now();
+
+                    if (activeStreamProgressTracker.url !== currentUrl || activeStreamProgressTracker.dropId !== currentDropId) {
+                        activeStreamProgressTracker = {
+                            url: currentUrl,
+                            dropId: currentDropId,
+                            lastPercentage: curPct,
+                            stuckSince: now
+                        };
+                    } else {
+                        if (curPct > activeStreamProgressTracker.lastPercentage) {
+                            activeStreamProgressTracker.lastPercentage = curPct;
+                            activeStreamProgressTracker.stuckSince = now;
+                        } else {
+                            const stuckMinutes = Math.round((now - activeStreamProgressTracker.stuckSince) / 60000);
+                            // Если смотрим канал >= 9 минут (3 цикла сверки), а процент на Twitch не сдвинулся:
+                            if (stuckMinutes >= 9) {
+                                log(`[Внимание] Канал ${currentUrl} не начисляет Drops на Twitch (прогресс застрял на ${curPct}% более ${stuckMinutes} мин). Возможно, стример отключил дропсы или стрим заморожен. Отправляем в ЧС на 15 мин.`);
+                                activeStreamProgressTracker = { url: null, dropId: null, lastPercentage: null, stuckSince: 0 };
+                                addToBlacklist(currentUrl, 15 * 60);
+                                nextChannel();
+                            }
+                        }
+                    }
+                }
+            }
+        }
 
         if (updatedAny) {
             // Применяем умную сортировку приоритетов:
@@ -2190,7 +2269,7 @@ function performInventorySync(requestedPlatform = 'auto', callback) {
                     }
                 }
 
-                executeScrape();
+                // Запуск парсинга происходит внутри waitForLoad() после полной перезагрузки страницы
             } else {
                 chrome.tabs.create({ url: invUrl, active: false }, (tempTab) => {
                     if (!tempTab || !tempTab.id) {
